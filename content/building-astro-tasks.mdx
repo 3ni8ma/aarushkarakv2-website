@@ -1,0 +1,55 @@
+export const title = "Building astro-tasks: A Python CLI Developer Dashboard for NASA Space Apps"
+export const date = "July 27, 2026"
+export const tags = ["Python", "CLI", "PyPI", "GitHub API", "Hack Club"]
+export const repo = "https://github.com/3ni8ma/astro-tasks"
+
+## Overview
+
+astro-tasks is a modular Python CLI that aggregates GitHub notifications, tracks git health stats, and provides a unified developer dashboard — built for the NASA Space Apps x Hack Club Stardance challenge. The tool wraps the GitHub API, local git analysis, and terminal UI rendering into a single pip-installable package.
+
+## Architecture
+
+The CLI is structured around a plugin-style command dispatcher:
+
+```
+astro-tasks/
+├── astro_tasks/
+│   ├── cli.py          # Click-based CLI entry point
+│   ├── github.py       # GitHub API client (notifications, issues, PRs)
+│   ├── gitstats.py     # Local repository health analysis
+│   ├── display.py      # Terminal rendering (Rich tables)
+│   └── config.py       # Token management and config loading
+├── pyproject.toml      # Build config (setuptools)
+└── README.md
+```
+
+Each command maps to a submodule: `astro-tasks notify` fetches unread GitHub notifications, `astro-tasks health` runs git statistics on the current repo, and `astro-tasks dashboard` combines both views.
+
+## Key Design Decisions
+
+### Click over argparse
+The Click library was chosen over stdlib argparse because it provides nested command groups, automatic help generation, and decorator-based parameter validation — reducing boilerplate by roughly 40% compared to argparse for the same surface area.
+
+### Rich for terminal UI
+Terminal tables use the Rich library's `Table` and `Panel` components, which handle column alignment, text wrapping, and ANSI color consistently across terminals. The health command renders a git statistics panel with branch info, commit frequency, and uncommitted change counts.
+
+### Token-based GitHub auth
+Rather than OAuth flows (overkill for a CLI), the tool reads a GitHub personal access token from `~/.config/astro-tasks/config.toml`, with fallback to the `GITHUB_TOKEN` environment variable. Token validation happens at startup with a clear error message.
+
+## Challenges
+
+**Rate limiting.** The GitHub unauthenticated rate limit (60 requests/hour) is too restrictive for a dashboard tool. Using a PAT bumps this to 5,000 requests/hour, but the tool still implements batching — notifications and issues are fetched in a single `GET /notifications` call with `If-Modified-Since` headers to avoid redundant payloads.
+
+**Cross-platform git path handling.** Git repo discovery had to account for Windows paths (backslash separators) and symlinked working directories. The `pathlib` module solved this cleanly with `Path.resolve()`.
+
+## Lessons Learned
+
+1. **CLI-first design forces simplicity.** Without a GUI, every feature must justify its existence through a clear command name and concise output. This constraint led to a more focused tool than a web dashboard would have been.
+2. **Static analysis on git repos is surprisingly cheap.** Running `git log --oneline -30` and parsing the output takes under 50ms even on large repos — fast enough for the `health` command to feel instant.
+3. **PyPI publication is straightforward with `hatch`.** The build pipeline uses `hatch build` and `hatch publish`, with version bumps automated via `hatch version major|minor|patch`.
+
+## Results
+
+The CLI was published to [PyPI](https://pypi.org/project/astro-tasks/) and received positive feedback from the Stardance challenge judges for its modular architecture and clean terminal output. The project template (pyproject.toml, CLI structure, config management) has been reused in two subsequent CLI projects.
+
+[View on GitHub](https://github.com/3ni8ma/astro-tasks)

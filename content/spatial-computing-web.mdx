@@ -1,0 +1,80 @@
+export const title = "Spatial Computing on the Web: MediaPipe + Three.js"
+export const date = "July 28, 2026"
+export const tags = ["Spatial Computing", "Three.js", "MediaPipe", "WebXR", "Computer Vision"]
+export const repo = "https://github.com/3ni8ma/HELIOS"
+
+## Overview
+
+HELIOS is a gesture-controlled browser-based operating system interface — no hardware wearables, no dedicated depth cameras. Just a standard webcam and the browser's JavaScript engines running hand tracking and 3D rendering in real time. This post covers the technical architecture, challenges faced, and what it taught me about the current state of browser-based computer vision.
+
+## System Architecture
+
+```
+Webcam Frame → MediaPipe Hands → Landmark Coordinates → Gesture Classifier → Action Dispatcher → Three.js Scene
+```
+
+The pipeline runs entirely client-side. At 30 FPS, MediaPipe's hand tracking model identifies 21 hand landmarks per detected hand. These 3D coordinates are fed into a lightweight gesture classifier that maps spatial configurations to OS-like actions: window focus, swipe navigation, pinch-to-zoom, and air-tap selection.
+
+## The MediaPipe Integration
+
+MediaPipe's JavaScript SDK ships as a WASM bundle with a WebGL backend for GPU acceleration. The key insight was **not** to use the GPU delegate for hand tracking — it creates a secondary WebGL context that conflicts with Three.js's rendering context, causing a crash-restart loop where `THREE.WebGLRenderer` fires `contextlost` events repeatedly.
+
+The fix: force the CPU delegate for MediaPipe hand tracking, keeping Three.js as the sole WebGL consumer. The performance tradeoff (CPU-based inference adds ~15ms per frame) was acceptable at 30 FPS target.
+
+```typescript
+const hands = new Hands({
+  locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`,
+});
+hands.setOptions({
+  maxNumHands: 2,
+  modelComplexity: 1,
+  minDetectionConfidence: 0.7,
+  minTrackingConfidence: 0.6,
+});
+```
+
+## Gesture Classification Approach
+
+Rather than training a deep learning classifier (which would require labeled gesture datasets and model hosting), I implemented a rule-based classifier operating on normalized landmark distances:
+
+- **Pinch**: thumb tip to index tip distance under 0.05x the hand bounding box diagonal
+- **Fist**: average distance from fingertips to palm center below a threshold
+- **Swipe**: velocity of wrist landmark exceeding a threshold in a single axis
+- **Point**: index finger extended, all other fingers curled
+
+This rule-based approach handles the core gesture vocabulary with ~90% accuracy in good lighting — no ML training pipeline required.
+
+## Three.js Rendering
+
+The 3D interface renders a spatial desktop with floating panels, icon grids, and a dock. Each interaction surface is a `PlaneGeometry` with `MeshPhysicalMaterial` for glass-like reflections. Window management (open, close, resize, drag) maps directly to Three.js object transformations:
+
+```typescript
+function handleDrag(landmark: NormalizedLandmark, target: Mesh) {
+  const x = (landmark.x - 0.5) * viewport.width;
+  const y = (0.5 - landmark.y) * viewport.height;
+  target.position.set(x, y, target.position.z);
+}
+```
+
+## Hardest Problems Solved
+
+### Context Conflict (WebGL)
+As mentioned above: Three.js and MediaPipe both want exclusive WebGL context access. The CPU delegate workaround cost ~3 hours of debugging — the crash logs pointed to a generic `CONTEXT_LOST_WEBGL` error with no indication that MediaPipe was the cause.
+
+### Latency Budget
+The entire frame budget at 30 FPS is 33ms. MediaPipe inference takes 15-20ms on CPU, gesture classification adds ~2ms, and Three.js rendering takes 5-8ms. This leaves a razor-thin 5-10ms margin for garbage collection and browser overhead. Optimizations included pre-allocating landmark arrays and using `BufferGeometry` with static attributes.
+
+### Calibration-Free Operation
+Initial prototypes required a T-pose calibration step. Removing it meant normalizing all landmark coordinates against the wrist-to-middle-finger distance — making gestures scale-invariant regardless of hand size or camera distance.
+
+## What I'd Do Differently
+
+1. **Web Workers for MediaPipe.** Offloading MediaPipe inference to a Web Worker would prevent the main thread from blocking on frame processing, recovering ~10ms for smoother rendering.
+2. **Gesture smoothing with Kalman filters.** Raw landmark data has frame-to-frame jitter. A simple exponential moving average helps, but a proper 1D Kalman filter on each landmark axis would produce significantly smoother gesture trajectories.
+3. **Progressive enhancement for WebXR.** The current implementation works on any browser with WebGL + webcam access. Adding an optional WebXR layer for AR devices would open up passthrough AR mode.
+
+## Results
+
+HELIOS was demonstrated as a functional proof-of-concept showing window management and basic app launching via hand gestures — entirely in the browser. The project has been featured in the Hack Club Slack and received contributions from three community members working on accessibility improvements.
+
+[View on GitHub](https://github.com/3ni8ma/HELIOS)

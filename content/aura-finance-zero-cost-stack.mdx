@@ -1,0 +1,112 @@
+export const title = "AuraFinance: Building a Zero-Cost Full-Stack Financial Intelligence Platform"
+export const date = "July 31, 2026"
+export const tags = ["FastAPI", "React", "Supabase", "Prophet", "ML", "FinTech"]
+export const repo = "https://github.com/3ni8ma/Finance-Hub"
+
+## Overview
+
+AuraFinance is a full-stack financial intelligence platform that combines live market monitoring, technical indicators, and ML-driven price forecasting in a single zero-cost stack. Every piece of infrastructure — frontend hosting, backend, database, and data source — runs on free tiers. This post covers the architecture, the forecasting pipeline, and the engineering tradeoffs behind shipping a production-grade finance app for $0/month.
+
+## The Zero-Cost Stack
+
+The constraint that shaped everything: no paid services. The stack is React/Vite/Tailwind on Vercel, a Python FastAPI backend deployed on Render's free tier, and Supabase PostgreSQL for persistence. Market data comes from yfinance — free, scraped Yahoo Finance data — eliminating API key costs entirely.
+
+```
+React (Vercel)  →  FastAPI (Render)  →  yfinance (market data)
+                       │
+                       ├── Supabase PostgreSQL (user data, portfolios)
+                       ├── Prophet forecasts (12h cache)
+                       └── slowapi rate limiting
+```
+
+## Backend Architecture
+
+The FastAPI app is organized as modular routers, one per domain — auth, stocks, market, news, portfolio, strategies, alerts, predict:
+
+```python
+app.include_router(auth_router, prefix="/api/auth", tags=["Auth"])
+app.include_router(stocks_router, prefix="/api/stocks", tags=["Stocks"])
+app.include_router(market_router, prefix="/api/market", tags=["Market"])
+app.include_router(predict_router, prefix="/api/predict", tags=["Predict"])
+```
+
+Every data endpoint is protected by token verification via `Depends(verify_token)`, and slowapi middleware rate-limits public-facing proxies to respect upstream free-tier limits.
+
+## The yfinance Reliability Problem
+
+yfinance scrapes Yahoo's public endpoints, and those endpoints occasionally return transient empty payloads. A naive implementation would crash or return misleading zeros. The market service wraps every fetch in defensive fallback logic:
+
+```python
+try:
+    data = yf.Ticker(symbol).history(period=period)
+    if data.empty:
+        return {"error": f"no data for {symbol}", "data": []}
+except Exception:
+    return {"error": f"unable to fetch {symbol}", "data": []}
+```
+
+The API returns structured errors rather than raising — the frontend renders graceful empty states instead of breaking the dashboard.
+
+## Real-Time Without WebSockets
+
+True push-based WebSockets require paid infrastructure (or complex self-hosting), which violates the zero-cost constraint. Instead, the dashboard polls the backend every 2000ms. For a monitoring use case where 2-second stale data is acceptable, this is the right tradeoff — it's simpler, stateless, and immune to connection-drop issues.
+
+## The Prophet Forecasting Pipeline
+
+Forecasts are the ML centerpiece. Prophet was chosen over LSTM networks because it produces quality forecasts from relatively little data, handles seasonality natively, and provides confidence intervals out of the box.
+
+The pipeline: fetch 2 years of daily closing prices → fit Prophet with yearly and weekly seasonality → predict 30 days out → cache the result for 12 hours.
+
+```python
+model = Prophet(
+    yearly_seasonality=True,
+    weekly_seasonality=True,
+    interval_width=0.80,
+)
+model.fit(df[["ds", "y"]])
+future = model.make_future_dataframe(periods=30)
+forecast = model.predict(future)
+```
+
+### Why 12-Hour Caching Matters
+
+Prophet fitting is compute-heavy — seconds per symbol on a free-tier Render instance. Without caching, a dashboard refresh would retrigger model fitting for every symbol, exhausting free CPU minutes within days. The forecast service caches results with cachetools, keyed by symbol:
+
+```python
+@lru_cache(maxsize=128)
+def get_prediction(symbol: str, period: int = 30):
+    ...
+```
+
+12 hours is long enough to absorb dashboard refreshes, short enough that forecasts stay fresh for the daily trader. The 80% confidence interval communicates uncertainty honestly — the UI renders the forecast band alongside the point estimate.
+
+## Technical Indicators
+
+The strategies engine computes standard indicators on demand:
+
+- **RSI**: 14-period, 70/30 overbought/oversold thresholds
+- **MACD**: 12, 26, 9 defaults
+- **Correlation matrix**: `numpy.corrcoef` over the past 90 days of closing prices across up to 5 comparison tickers
+
+## Supabase Auth and Row-Level Security
+
+Auth uses Supabase's email/password flow instead of a custom JWT implementation — no token signing code, no refresh-token infrastructure to maintain. The security model relies on Row Level Security policies scoping every table by `user_id`, so a compromised token can't read another user's portfolio:
+
+```sql
+CREATE POLICY "portfolios_owned_by_user"
+ON portfolios FOR ALL
+USING (auth.uid() = user_id);
+```
+
+## Lessons Learned
+
+1. **Free tiers shape architecture more than any design preference.** The 2000ms polling, the 12-hour cache, the Render cold-start health endpoint — all exist because the infrastructure is free. Constraint-driven design produces pragmatic systems.
+2. **Structured errors beat exceptions.** yfinance's flakiness made graceful degradation the default behavior, which turned into a genuinely better UX: every dashboard state has an explicit empty/error rendering path.
+3. **Cache aggressively around expensive compute.** One `lru_cache` decorator converted a CPU-burning endpoint into a cheap one. On free infrastructure, caching isn't an optimization — it's the difference between staying in tier and getting suspended.
+4. **RSL is the real security boundary.** With Supabase Auth, the database policy layer, not the API code, enforces data isolation. Keeping the enforcement in SQL makes it auditable and impossible to bypass accidentally in a new route.
+
+## Results
+
+The platform runs with zero monthly cost: market quotes, indicator analysis, portfolio tracking with RLS, and 30-day Prophet forecasts — all served from a cold-start-tolerant API with a health endpoint and rate limiting.
+
+[View on GitHub](https://github.com/3ni8ma/Finance-Hub)

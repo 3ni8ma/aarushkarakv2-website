@@ -1,0 +1,104 @@
+export const title = "Civic Tech and Open Source Data Platforms: Building CommunityOne"
+export const date = "July 30, 2026"
+export const tags = ["Civic Tech", "Open Source", "FastAPI", "Web Scraping", "Data Pipeline", "Supabase"]
+export const repo = "https://github.com/3ni8ma/DoxDock"
+
+## Overview
+
+CommunityOne (DoxDock) is an open-source data platform that aggregates and normalizes public records from disparate local government sources — court filings, property records, business registrations, and legislative meeting minutes — into a searchable, queryable API. This post covers the data pipeline architecture, legal considerations, and technical challenges of working with government data systems.
+
+## The Problem
+
+Local government records in the United States are scattered across thousands of independently operated websites, each with its own schema, search interface, and data format. Some offer PDF exports, some provide HTML tables, and many have no structured data access at all. Journalists, researchers, and civic organizations spend disproportionate effort just locating and parsing these records.
+
+## Architecture
+
+```
+Scraper Layer (Playwright + BeautifulSoup)
+       │
+       ▼
+Normalization Pipeline (Pydantic models)
+       │
+       ▼
+Storage (Supabase PostgreSQL)
+       │
+       ▼
+API Layer (FastAPI)
+       │
+       ▼
+Client SDK (Python requests wrapper)
+```
+
+### Scraper Layer
+
+Each government source gets a dedicated scraper module implementing a common interface:
+
+```python
+class BaseScraper(ABC):
+    @abstractmethod
+    async def fetch(self, query: str) -> list[RawRecord]: ...
+    @abstractmethod
+    def normalize(self, raw: RawRecord) -> NormalizedRecord: ...
+```
+
+Playwright handles JavaScript-rendered pages (many government sites are SPA-based), while simpler HTML sources use `BeautifulSoup` + `httpx`. Rate limiting respects `robots.txt` and applies per-domain throttling to avoid triggering anti-scraping measures.
+
+### Normalization Pipeline
+
+The most technically challenging component. A single "court filing" might arrive as:
+
+- An HTML table cell with a docket number
+- A PDF filename containing the case ID
+- A JSON API response with structured metadata
+
+The normalization layer maps each variance to a canonical `NormalizedRecord` Pydantic model with standardized fields: `jurisdiction`, `record_type`, `external_id`, `filing_date`, `parties`, and `raw_source_url`. Field extraction uses regex patterns for known formats (e.g., `\d{2}-\d{8}-\d{2}` for California court docket numbers) with fallback to fuzzy matching.
+
+### API Layer
+
+FastAPI serves endpoints for search, filter, and export:
+
+```python
+@app.get("/api/v1/search")
+async def search(
+    q: str,
+    jurisdiction: str | None = None,
+    record_type: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, le=100),
+):
+    ...
+```
+
+PostgreSQL full-text search (`to_tsvector` / `to_tsquery`) powers the search endpoint, with GIN indexes on the `search_vector` column for sub-100ms queries on datasets up to 500,000 records.
+
+## Legal and Ethical Considerations
+
+This is the part most technical writeups skip. Scraping government websites operates in a legal gray area — while public records are by definition public, the method of access can trigger:
+
+- **CFAA concerns**: Terms of service violations are not criminal under the 2021 CFAA reform, but the legal landscape varies by jurisdiction
+- **Rate limit ethics**: The platform caps per-source rates at 1 request/second and respects `Retry-After` headers — aggressive scraping harms government IT systems that are already underfunded
+- **Data freshness**: Court records change frequently. Every record includes a `fetched_at` timestamp, and the pipeline re-scrapes high-churn sources every 24 hours
+
+CommunityOne is non-commercial and open source. All scraped data is licensed under CC0 (public domain dedication) to maximize civic utility.
+
+## Key Technical Challenges
+
+**PDF parsing.** Court documents are often scanned PDFs without OCR text layers. Tesseract OCR integration runs as a background Celery task, with confidence scoring: documents below 0.7 confidence are flagged for manual review rather than included in search results.
+
+**Schema drift.** Government websites redesign without warning. Scraper selectors break silently. The monitoring system tracks expected element presence per scraper and alerts when three consecutive runs produce zero results.
+
+**Geographic normalization.** "New York" might mean the state, the city, or a specific county. The pipeline uses the Census Bureau's Geocoding API to resolve ambiguous location strings to FIPS codes.
+
+## Results
+
+CommunityOne currently indexes records from 12 jurisdictions covering court filings, property records, and business registrations. The search API serves approximately 2,000 queries per month from civic organizations and journalism students.
+
+## Future Work
+
+1. **Diff tracking.** Show what changed in a case or record between scrapes — docket updates, status changes, new filings
+2. **Bulk export.** Allow researchers to download filtered datasets as CSV or Parquet for offline analysis
+3. **Webhook subscriptions.** Notify users when a specific entity (person, business, property) appears in newly scraped records
+
+[View on GitHub](https://github.com/3ni8ma/DoxDock)

@@ -1,0 +1,45 @@
+export const title = "Building a Web Scraper That Survives: Anti-Bot Evasion Tactics"
+export const date = "August 01, 2026"
+export const tags = ["Web Scraping", "Playwright", "Automation", "Anti-Detection"]
+export const repo = "https://github.com/3ni8ma/DoxDock"
+
+## Why Modern Scraping is Hard
+
+Modern websites use Cloudflare, DataDome, and behavioral analysis to block scrapers. This post covers Playwright stealth, fingerprint randomization, CAPTCHA solving, proxy rotation, and the cat-and-mouse game of browser automation detection.
+
+
+## Why Modern Scraping is Hard
+
+The days of simple HTTP GET requests are over. Cloudflare's JS challenge, DataDome's behavioral analysis, and Akamai's browser fingerprinting detect non-human traffic by checking WebGL rendering, canvas fingerprinting, audio context, and navigator property consistency. A request from Python's requests library is detected and blocked in milliseconds.
+
+
+## Playwright Stealth Techniques
+
+Standard Playwright automation leaves detectable signatures: `navigator.webdriver` is true, Chromium's `--headless` User-Agent gives it away, and WebDriver properties leak through. Stealth plugins patch these by overriding navigator properties, spoofing WebGL vendor strings, and injecting consistent iframe parent attributes.
+
+
+## Browser Fingerprint Randomization
+
+Canvas fingerprinting renders hidden text and compares the pixel hash — GPUs render slightly differently per machine. AudioContext fingerprinting measures frequency response curves. A static fingerprint across sessions is easily detected. The solution: rotate between pre-generated fingerprint profiles (canvas hash, audio hash, WebGL vendor, screen resolution, timezone) per session.
+
+
+## CAPTCHA Solving Approaches
+
+CAPTCHAs remain the hardest barrier. For Turnstile/reCAPTCHA v2, solving services (2Captcha, Capsolver) route images to human solvers for ~$2 per 1000 solves. For invisible CAPTCHAs, mimicking human mouse movement with bezier curves and realistic timing is often sufficient. Enterprise sites may require session reuse with premium residential proxies.
+
+
+## Proxy Infrastructure
+
+Datacenter proxies are blocked by most SaaS platforms. Residential proxies (BrightData, IPRoyal) route through real ISP connections. Mobile proxies (4G/5G) are the gold standard — hardest to detect and block. The proxy pool needs automatic health checking: low-success-rate IPs are rotated out, high-latency IPs are deprioritized.
+
+
+## Legal and Ethical Boundaries
+
+The 2021 hiQ Labs v. LinkedIn ruling established that scraping public data does not violate the CFAA. However, bypassing technical measures (like CAPTCHAs) after being explicitly blocked may cross legal lines. Rate limiting to 1 request/second, respecting robots.txt, and not reselling scraped data keeps most scraping projects in ethical territory.
+
+
+---
+
+Web scraping has evolved from simple HTTP requests to a sophisticated cat-and-mouse game requiring browser automation, fingerprint management, and proxy infrastructure. The key is blending in rather than breaking through.
+
+[View on GitHub](https://github.com/3ni8ma/DoxDock)

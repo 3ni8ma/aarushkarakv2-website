@@ -1,0 +1,45 @@
+export const title = "The Architecture of Real-Time Dashboards: WebSockets, Polling, and Event Sourcing"
+export const date = "August 02, 2026"
+export const tags = ["Real-Time", "WebSockets", "Event Sourcing", "Architecture", "Dashboard"]
+export const repo = "https://github.com/3ni8ma/aura-finance"
+
+## WebSockets vs Polling: The Real Tradeoffs
+
+Building a real-time financial dashboard taught me when to use WebSockets vs polling, how to manage state across reconnection, and why event sourcing beats CRUD for live data. A case study in system design tradeoffs.
+
+
+## WebSockets vs Polling: The Real Tradeoffs
+
+WebSockets provide true server-push with minimal overhead per message, but require persistent connections, reconnection logic, and server-side connection management. Polling is simpler to implement but wastes bandwidth on empty responses. The decision matrix: WebSockets for sub-second latency requirements (trading dashboards, collaborative editing), polling for updates every 2+ seconds (monitoring dashboards, analytics).
+
+
+## Connection Management and Reconnection
+
+WebSocket connections drop. Production systems need exponential backoff reconnection (1s, 2s, 4s, 8s... capped at 30s), heartbeat/ping-pong to detect silent disconnects, and idempotent message delivery to handle duplicate events after reconnection. A state machine (CONNECTING, OPEN, CLOSED, RECONNECTING) prevents race conditions.
+
+
+## Event Sourcing Over CRUD
+
+CRUD stores the latest state; event sourcing stores every state change as an immutable event. For real-time dashboards, event sourcing enables: replaying historical state, time-travel debugging, and computing derived views (moving averages, aggregations) without data loss. Apache Kafka is the canonical event store, but Redis Streams or PostgreSQL with logical replication work for smaller scales.
+
+
+## State Management on the Client
+
+Redux-style stores (Zustand, Zustand) handle WebSocket events by dispatching actions that update normalized state. The store must handle: out-of-order events (buffer and sort by timestamp), gap detection (request historical data if a sequence number is skipped), and optimistic updates with rollback on server rejection.
+
+
+## Backpressure and Rate Limiting
+
+A burst of 10,000 trades/second can overwhelm both network and renderer. Strategies: server-side sampling (send every Nth event), client-side decimation (render every Nth received event), and virtual scrolling for DOM updates. The render budget should never exceed 16ms per frame (60 FPS).
+
+
+## Case Study: AuraFinance
+
+AuraFinance uses 2000ms polling instead of WebSockets because the financial data sources (yfinance) don't support push. The tradeoff: 2-second stale data is acceptable for the use case, and the simpler infrastructure eliminates connection management entirely. The lesson: choose the simplest solution that meets your latency requirements.
+
+
+---
+
+The best real-time architecture is the simplest one that meets your latency SLA. Start with polling, add WebSockets only when sub-second latency is critical, and build event sourcing when you need audit trails and time-travel debugging.
+
+[View on GitHub](https://github.com/3ni8ma/aura-finance)

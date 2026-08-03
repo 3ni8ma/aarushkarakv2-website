@@ -1,0 +1,45 @@
+export const title = "React Server Components: A Mental Model Shift"
+export const date = "August 03, 2026"
+export const tags = ["React", "Server Components", "Next.js", "Architecture"]
+export const repo = "https://github.com/3ni8ma/aarushkarakv2-website"
+
+## What Server Components Actually Do
+
+Server Components change how we think about React. No hydration, no client-side JS, direct database access from components. This post covers the architecture, data fetching patterns, and when to use server vs client components in production.
+
+
+## What Server Components Actually Do
+
+Server Components render to a streamable format on the server and never send their JS bundle to the client. Unlike SSR (which hydrates into a full client-side app), Server Components have zero client runtime. The component tree is split: Server Components handle data fetching and static rendering, Client Components handle interactivity and browser APIs.
+
+
+## Data Fetching Without useEffect
+
+Server Components can directly query databases, read files, or call internal APIs — no useEffect, no SWR, no React Query. The component is async and awaits data directly. This eliminates waterfall loading states, reduces bundle size, and simplifies error handling. The tradeoff: no loading state between server render and client paint (use Suspense boundaries).
+
+
+## The Client Boundary
+
+Any component that uses useState, useEffect, onClick, or browser APIs must be a Client Component (`'use client'`). The boundary is explicit and intentional. This drives a clean separation: Server Components handle data and layout, Client Components handle interactivity. The 'use client' directive acts as a documentation point for where browser code enters the tree.
+
+
+## Streaming and Suspense
+
+Server Components stream incrementally. A slow data fetch doesn't block the entire page — wrapped in Suspense, it streams a fallback and replaces it when ready. This is fundamentally different from SSR, where the entire page must be rendered before sending a single byte.
+
+
+## Composition Patterns
+
+Pass Client Components as children to Server Components rather than importing them directly. This pattern (Server Component wrapping Client Component) allows the server to handle data fetching while the client handles interactivity, with the boundary managed through props rather than deep nesting.
+
+
+## Production Considerations
+
+Server Components change caching, authentication, and error handling patterns. Auth tokens must be accessed from cookies/headers in Server Components (not localStorage). Caching is per-component with fetch() deduplication. Error boundaries must be Client Components.
+
+
+---
+
+React Server Components aren't just a performance optimization — they're a fundamental shift in the mental model of web development. The separation of server and client concerns leads to smaller bundles, faster pages, and more intentional architecture.
+
+[View on GitHub](https://github.com/3ni8ma/aarushkarakv2-website)

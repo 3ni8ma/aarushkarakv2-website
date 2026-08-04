@@ -1,0 +1,45 @@
+export const title = "Containerization Without Docker: Alternatives for Development and Production"
+export const date = "August 04, 2026"
+export const tags = ["Containers", "Docker", "Podman", "Nix", "DevOps"]
+export const repo = "https://github.com/3ni8ma/cli-tool"
+
+## Why Look Beyond Docker
+
+Docker has become synonymous with containers, but alternatives like Podman, Nix, and Firecracker offer compelling advantages for specific use cases. This post compares the ecosystem from a developer's perspective.
+
+
+## Why Look Beyond Docker
+
+Docker Desktop's licensing changes, the Moby project's complexity, and the daemon-based architecture have driven interest in alternatives. For development, rootless containers and better macOS integration are key concerns. For production, microVM isolation and smaller attack surfaces matter more.
+
+
+## Podman: Rootless by Default
+
+Podman uses a fork-exec model (no daemon) and runs containers rootless by default. Pods (groups of containers sharing namespaces) map naturally to Kubernetes pods. The CLI is Docker-compatible (`alias docker=podman`), making migration trivial. Builds use Buildah under the hood, which supports Dockerfiles.
+
+
+## Nix and NixOS: Reproducible Builds
+
+Nix isn't a container runtime — it's a purely functional package manager and build system. Nixpkgs defines packages as deterministic build functions. `nix run`, `nix shell`, and `nix develop` provide ephemeral environments without containers. `dockerTools.buildImage` generates Docker images from Nix derivations with minimal layers and perfect reproducibility.
+
+
+## Firecracker: MicroVM for Serverless
+
+AWS's Firecracker runs microVMs with sub-second boot times and 5MB memory overhead per VM. Each microVM runs a single process with its own kernel — stronger isolation than containers. The tradeoff: no container image support (requires ext4 rootfs), no orchestration built-in (needs Fly Machines, AWS Fargate, or custom tooling).
+
+
+## OCI Runtime Alternatives
+
+runC (the default Docker runtime) has had multiple CVEs. Alternatives include: crun (C-based, faster, less memory), gVisor (userspace kernel for stronger isolation), and Kata Containers (lightweight VM per container using QEMU or Firecracker). Each makes different tradeoffs between performance, compatibility, and security.
+
+
+## Choosing the Right Tool
+
+For local development: Podman or Nix. For CI/CD: Docker (most GitHub Actions runners support it). For production with strong isolation: Firecracker or gVisor. For reproducibility: Nix. The ecosystem is healthier than ever — Docker is no longer the only mature option.
+
+
+---
+
+The container ecosystem has matured beyond Docker. Podman, Nix, and microVM runtimes each solve specific problems better than Docker, and understanding their tradeoffs helps choose the right tool for each job.
+
+[View on GitHub](https://github.com/3ni8ma/cli-tool)

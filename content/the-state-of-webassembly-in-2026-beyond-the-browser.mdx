@@ -1,0 +1,45 @@
+export const title = "The State of WebAssembly in 2026: Beyond the Browser"
+export const date = "August 05, 2026"
+export const tags = ["WebAssembly", "WASI", "Wasmtime", "Edge Computing", "Runtime"]
+export const repo = "https://github.com/3ni8ma/knowledge-globe"
+
+## WASI: Standardizing System Access
+
+WebAssembly has grown far beyond client-side gaming. With WASI, component model, and runtimes like Wasmtime and Wasmer, WebAssembly is becoming the universal runtime for edge computing, plugins, and polyglot microservices.
+
+
+## WASI: Standardizing System Access
+
+The WebAssembly System Interface (WASI) defines how Wasm modules interact with the outside world — files, sockets, clocks, random numbers. WASI preview 2 introduces the component model: modules expose typed interfaces that can be composed and chained. This is the foundation for Wasm as a general-purpose runtime outside browsers.
+
+
+## The Component Model
+
+Wasm components are composable units with typed interfaces defined in WIT (Wasm Interface Type). A component can import another component's interface without knowing its implementation language. This enables polyglot services: a Rust component calls a Python component calls a Go component, all compiled to Wasm and composed at runtime.
+
+
+## Edge Computing with Wasm
+
+Cloudflare Workers, Fastly Compute@Edge, and Fly Machines run Wasm at the edge. Cold starts in microseconds (vs 100ms+ for containers), tiny memory footprint, and sandboxed execution make Wasm ideal for CDN-based compute. Workers processes millions of requests per second using V8's Wasm engine.
+
+
+## Wasn't Fast Enough? — AOT Compilation
+
+Interpreted Wasm is 1.5-2x slower than native. Ahead-of-time compilation (Cranelift, LLVM) closes this gap to within 10-20% of native. Singlepass compilation (used by Wasmer) prioritizes compile time over runtime speed — useful for short-lived functions. The gap narrows with every LLVM release.
+
+
+## Plugin Systems
+
+Wasm plugins are replacing Lua, Python, and dynamic linking for extensible applications. Envoy's Wasm filter, Unreal Engine's Wasm plugin system, and Shopify's Wasm-based theme engine demonstrate the pattern: host applications load untrusted plugins in a sandboxed Wasm environment with controlled API access.
+
+
+## The Missing Pieces
+
+GC support (required for Java, C#, Kotlin) is landing in WasmGC. Threads are experimental. SIMD is stable but not universally supported. The toolchain (wasm-pack, cargo-component) is improving rapidly but still has rough edges compared to native ecosystems.
+
+
+---
+
+WebAssembly is evolving from a browser-only technology to a universal runtime for edge compute, plugin systems, and polyglot services. 2026 marks the year Wasm becomes a viable alternative to containers for many use cases.
+
+[View on GitHub](https://github.com/3ni8ma/knowledge-globe)

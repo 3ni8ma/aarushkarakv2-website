@@ -1,0 +1,45 @@
+export const title = "PostgreSQL Internals: What Happens When You Run SELECT *"
+export const date = "August 06, 2026"
+export const tags = ["PostgreSQL", "Databases", "Internals", "Performance", "SQL"]
+export const repo = "https://github.com/3ni8ma/DoxDock"
+
+## Parser and Analyzer
+
+From parsing to execution: tracing the full lifecycle of a SQL query through PostgreSQL's planner, executor, buffer manager, and storage engine. Understanding these internals helps write faster queries and design better schemas.
+
+
+## Parser and Analyzer
+
+The parser tokenizes SQL text into a parse tree using a LALR grammar. The analyzer checks table/column existence, resolves types, and transforms the parse tree into a query tree (Query node). This is where permissions are checked and views are expanded into their underlying queries.
+
+
+## The Planner: Cost-Based Optimization
+
+The planner generates multiple query plans and estimates their cost using I/O and CPU cost constants. Sequential scan cost is `cpu_tuple_cost * ntuples + cpu_operator_cost * ntuples * nwhere`. Index scan adds `random_page_cost * nindex_pages + cpu_index_tuple_cost * ntuples`. The planner picks the cheapest plan, with GEQO (genetic query optimizer) kicking in for joins beyond 12 tables.
+
+
+## Executor: Running the Plan
+
+The executor processes plan nodes in a pull-based model (top-down). Each node has three callbacks: Init (open files, allocate memory), Exec (return next tuple), End (clean up). A SeqScan node reads a page from the buffer manager, extracts tuples via the tuple table slot interface, and checks visibility using MVCC snapshots.
+
+
+## Buffer Manager and Shared Buffers
+
+PostgreSQL uses a shared buffer pool (default 128MB, recommended 25% of RAM). Pages are cached in a clock-sweep eviction policy. If a page is not in shared buffers, the buffer manager requests it from the OS via `pread()`. The OS may cache the page in its page cache — double buffering is a known inefficiency.
+
+
+## MVCC and Tuple Visibility
+
+Every tuple has `xmin` (creating transaction) and `xmax` (deleting/updating transaction) fields. A tuple is visible if `xmin` is committed and `xmax` is not set, not committed, or the transaction matches the current snapshot. This is why VACUUM is essential — dead tuples waste space and slow down sequential scans.
+
+
+## Query Optimization Tips from Internals Knowledge
+
+Index conditions vs filter conditions: index conditions (`Index Cond`) prune rows at the index level, filters (`Filter`) prune after fetching from heap. Covering indexes (INCLUDE columns) avoid heap lookups. Partial indexes reduce index size. The key insight: most query performance problems come from the planner underestimating row counts due to correlated columns.
+
+
+---
+
+Understanding PostgreSQL's internals — from the parser through the buffer manager — transforms query optimization from guesswork into engineering. The planner reveals its decisions through EXPLAIN ANALYZE, and knowing what each node type does lets you diagnose performance issues precisely.
+
+[View on GitHub](https://github.com/3ni8ma/DoxDock)

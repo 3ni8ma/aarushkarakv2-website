@@ -1,0 +1,45 @@
+export const title = "Production ML Pipelines: From Notebook to Serving"
+export const date = "August 07, 2026"
+export const tags = ["Machine Learning", "MLOps", "Pipelines", "Feature Stores", "Monitoring"]
+export const repo = "https://github.com/3ni8ma/aura-finance"
+
+## The Notebook Problem
+
+Jupyter notebooks don't scale. This post covers feature stores, model versioning, A/B testing infrastructure, monitoring drift, and the engineering practices that separate research ML from production ML systems.
+
+
+## The Notebook Problem
+
+Jupyter notebooks mix code, results, and narrative — great for exploration, terrible for production. Cells executed out of order produce unreproducible states. No versioning of data or parameters. No testing. The solution: refactor notebooks into modular Python packages with entry points, type hints, and unit tests before deployment.
+
+
+## Feature Stores: Curated Data
+
+Features are computed once and served for both training and inference. A feature store (Feast, Tecton) handles: point-in-time correct joins (avoiding data leakage), feature serving with low latency, and feature versioning when source data changes. Without a feature store, training/serving skew is inevitable — the training code computes features differently than the serving code.
+
+
+## Model Versioning and Registry
+
+Models are artifacts with metadata: training hyperparameters, validation metrics, dataset hash, framework version, and training code commit. An MLflow or Weights & Biases registry tags each model version as staging, production, or archived. Models are deployed by tag, not by file path — enabling instant rollbacks.
+
+
+## A/B Testing Infrastructure
+
+Production ML systems need controlled experiments: 10% of traffic gets model v2, 90% gets model v1. The serving layer routes requests based on a shadow flag, and comparison metrics (accuracy, latency, cost) are logged to a separate analytics pipeline. Automated rollback triggers if metrics degrade beyond thresholds.
+
+
+## Monitoring for Drift
+
+Data drift (input distribution changes), concept drift (relationship between input and target changes), and model degradation (accuracy decay over time) must be detected automatically. Monitoring computes statistical tests (KS test, population stability index) on prediction distributions per time window and alerts when drift exceeds thresholds.
+
+
+## The Prophet Forecasting Pipeline
+
+AuraFinance uses Prophet for 30-day stock price forecasts. The pipeline: fetch 2 years of daily close prices, log-transform for variance stabilization, fit Prophet with yearly/weekly seasonality and holiday effects, cache the forecast for 12 hours. The 80% confidence interval provides a realistic uncertainty range.
+
+
+---
+
+Production ML is an engineering discipline, not a data science exercise. Feature stores, model registries, A/B testing, and drift monitoring transform ML from a notebook experiment into a reliable, auditable system.
+
+[View on GitHub](https://github.com/3ni8ma/aura-finance)

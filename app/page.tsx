@@ -1,65 +1,186 @@
-import Image from "next/image";
+import BackgroundEffect from "@/components/BackgroundEffect";
+import GlassCard from "@/components/GlassCard";
+import GlowButton from "@/components/GlowButton";
+
+const projects = [
+  {
+    title: "HELIOS",
+    image: "/images/projects/Helios-thumbnail.png",
+    description:
+      "Browser-based AI operating system with touch-free hand-gesture navigation and a 3D spatial interface. Built with Three.js & MediaPipe.",
+    tags: ["Three.js", "MediaPipe", "AI", "Spatial Computing"],
+    href: "https://github.com/3ni8ma/HELIOS",
+  },
+  {
+    title: "astro-tasks",
+    image: "/images/projects/Astro-Tasks-thumbnail.png",
+    description:
+      "Python CLI developer dashboard on PyPI integrating GitHub CLI, git health checks, and WakaTime coding stats.",
+    tags: ["Python", "CLI", "PyPI", "Open Source"],
+    href: "https://github.com/3ni8ma/astro-tasks",
+  },
+  {
+    title: "Finance Hub",
+    image: "/images/projects/Finance-Hub-thumbnail.png",
+    description:
+      "Full-stack financial intelligence platform with live market monitoring, AI-driven predictions using Prophet, and real-time dashboards.",
+    tags: ["React", "FastAPI", "Supabase", "ML"],
+    href: "https://github.com/3ni8ma/Finance-Hub",
+  },
+  {
+    title: "Knowledge-Globe",
+    image: "/images/projects/Knowledge-Globe-thumbnail.png",
+    description:
+      "Interactive 3D encyclopedia visualizing knowledge networks on a rotatable 3D globe with dynamic data connections.",
+    tags: ["Three.js", "WebGL", "Data Viz"],
+    href: "https://github.com/3ni8ma/Knowledge-Globe",
+  },
+  {
+    title: "FixMate",
+    image: "/images/projects/FixMate-thumbnail.png",
+    description:
+      "AI-powered home maintenance diagnostic application that helps users identify and resolve household issues.",
+    tags: ["AI", "Web App", "Diagnostics"],
+    href: "https://github.com/3ni8ma/Fixmate-App",
+  },
+  {
+    title: "CommunityOne",
+    image: "/images/projects/CommunityOne-thumbnail.png",
+    description:
+      "Open-source civic data platform centralizing public records and legislative datasets with cloud-native backend systems.",
+    tags: ["Node.js", "PostgreSQL", "Civic Tech"],
+    href: "https://github.com/3ni8ma/DoxDock",
+  },
+];
+
+const stats = [
+  { value: "200+", label: "Coding Hours Tracked" },
+  { value: "9+", label: "Projects" },
+  { value: "$5K+", label: "Freelance Revenue" },
+  { value: "200+", label: "Volunteer Hours" },
+];
 
 export default function Home() {
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
+    <div className="relative isolate min-h-screen overflow-hidden">
+      <BackgroundEffect effect="mesh-gradient" />
+
+      {/* Hero Section */}
+      <section className="relative z-10 min-h-[calc(100vh-4rem)] px-4 py-20 flex flex-col md:flex-row items-center md:items-center justify-center gap-10 md:gap-16 max-w-5xl mx-auto">
+        <div className="flex-1 text-left">
+          <h1>
+            <img
+              src="/images/logo-text.png"
+              alt="Aarush Karak"
+              className="h-12 sm:h-16 md:h-20 w-auto"
             />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+          </h1>
+          <GlassCard className="mt-6 px-8 py-5 max-w-2xl">
+            <p className="text-lg sm:text-xl text-white/80 leading-relaxed font-medium">
+              Sophomore @ John Fraser Secondary School | Founder @ TheCoderBros |
+              Software Developer | Spatial Computing & AI Enthusiast
+            </p>
+          </GlassCard>
+
+          <div className="mt-8 grid grid-cols-2 gap-3 w-full max-w-lg">
+            {[
+              "Founder @ TheCoderBros",
+              "1st Place TSA State Champion (Video Game 3D Design)",
+              "NYLF Engineering Invited Scholar",
+            ].map((badge) => (
+              <div
+                key={badge}
+                className="glass-card px-4 py-3 text-sm text-white/90 text-left font-semibold"
+              >
+                {badge}
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-8 flex flex-wrap gap-4">
+            <GlowButton
+              href="/blog"
+              className="px-8 py-3 text-sm font-bold text-white hover:text-cyan transition-all"
+            >
+              Explore Projects
+            </GlowButton>
+            <GlowButton
+              href="/resume.pdf"
+              download
+              className="px-8 py-3 text-sm font-bold text-white hover:text-cyan transition-all"
+            >
+              Download Resume
+            </GlowButton>
+          </div>
         </div>
-      </main>
+
+        <div className="flex-shrink-0">
+          <div className="relative w-56 md:w-72 rounded-2xl overflow-hidden border border-white/10 glass-card p-2">
+            <img
+              src="/images/profile.jpg"
+              alt="Aarush Karak"
+              className="w-full h-auto rounded-xl block"
+            />
+          </div>
+        </div>
+      </section>
+
+      {/* Stats Bar */}
+      <section className="relative z-10 mx-auto max-w-4xl px-4 pb-16">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          {stats.map((stat) => (
+            <GlassCard key={stat.label} className="text-center py-6 px-4">
+              <div className="text-3xl font-bold text-cyan">{stat.value}</div>
+              <div className="mt-1 text-sm text-white/70 font-medium">{stat.label}</div>
+            </GlassCard>
+          ))}
+        </div>
+      </section>
+
+      {/* Featured Projects */}
+      <section className="relative z-10 mx-auto max-w-6xl px-4 pb-24">
+        <GlassCard className="p-6 mb-12 text-center">
+          <h2 className="text-3xl font-bold">
+            Featured <span className="text-gradient-cyan">Projects</span>
+          </h2>
+        </GlassCard>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+          {projects.map((project) => (
+            <GlassCard key={project.title} as="a" href={project.href} className="p-6 flex flex-col group">
+              <div className="relative overflow-hidden rounded-xl border border-white/10 mb-4">
+                <img
+                  src={project.image}
+                  alt={`${project.title} preview`}
+                  className="w-full aspect-video object-cover block transition-transform duration-500 group-hover:scale-105"
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-xl font-bold text-white group-hover:text-cyan transition-colors">
+                  {project.title}
+                </h3>
+                <svg className="h-4 w-4 text-white/30 group-hover:text-cyan transition-colors flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6" />
+                  <polyline points="15 3 21 3 21 9" />
+                  <line x1="10" y1="14" x2="21" y2="3" />
+                </svg>
+              </div>
+              <p className="mt-3 text-sm text-white/70 leading-relaxed flex-1">
+                {project.description}
+              </p>
+              <div className="mt-4 flex flex-wrap gap-2">
+                {project.tags.map((tag) => (
+                  <span
+                    key={tag}
+                    className="px-3 py-1 text-xs font-semibold rounded-full bg-white/10 text-cyan border border-white/10"
+                  >
+                    {tag}
+                  </span>
+                ))}
+              </div>
+            </GlassCard>
+          ))}
+        </div>
+      </section>
     </div>
   );
 }

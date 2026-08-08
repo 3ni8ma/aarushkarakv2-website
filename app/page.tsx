@@ -15,7 +15,7 @@ const projects = [
     title: "astro-tasks",
     image: "/images/projects/Astro-Tasks-thumbnail.png",
     description:
-      "Python CLI developer dashboard on PyPI integrating GitHub CLI, git health checks, and WakaTime coding stats.",
+      "Python CLI developer dashboard on PyPI integrating GitHub CLI, git health checks, and stats. Built for Hack Club Stardance Challenge (NASA x GitHub x AMD).",
     tags: ["Python", "CLI", "PyPI", "Open Source"],
     href: "https://github.com/3ni8ma/astro-tasks",
   },
@@ -85,6 +85,7 @@ export default function Home() {
           <div className="mt-8 grid grid-cols-2 gap-3 w-full max-w-lg">
             {[
               "Founder @ TheCoderBros",
+              "Platform Engineer @ Hack Club (Stardance)",
               "1st Place TSA State Champion (Video Game 3D Design)",
               "NYLF Engineering Invited Scholar",
             ].map((badge) => (

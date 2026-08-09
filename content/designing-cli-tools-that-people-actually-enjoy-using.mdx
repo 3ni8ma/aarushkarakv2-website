@@ -1,0 +1,45 @@
+export const title = "Designing CLI Tools That People Actually Enjoy Using"
+export const date = "August 09, 2026"
+export const tags = ["CLI", "UX", "Terminal", "Python", "Design"]
+export const repo = "https://github.com/3ni8ma/astro-tasks"
+
+## Argument Design Philosophy
+
+Good CLIs are more than argparse + sys.exit. This post covers argument design patterns, progress indicators, color semantics, error messaging philosophy, and how to make terminal tools feel polished.
+
+
+## Argument Design Philosophy
+
+Subcommands (git-style) for complex tools, flags for configuration, arguments for positional inputs. The Unix principle: do one thing well. Every flag should have a long form (`--verbose`) and a short form (`-v`). Flags that change behavior (not configuration) should be flags, not environment variables. Every tool should respond to `--help` with examples.
+
+
+## Progress and Feedback
+
+Operations taking >500ms need a progress indicator. Rich's Progress class, tqdm, and spinner animations give users confidence the tool hasn't frozen. The rule: if the user waits, show progress. If the user waits >5 seconds, show ETA or per-item throughput. Silent tools that run for 30 seconds without output are bad.
+
+
+## Color Semantics
+
+Colors encode meaning: red = error/failure, green = success/completion, yellow = warning/attention, cyan = informational/file path, dim gray = metadata/secondary info. This convention lets users scan terminal output quickly. Never use color as the only differentiator — some users have color vision deficiencies or use monochrome terminals.
+
+
+## Error Messaging
+
+Bad: `Error: [Errno 2] No such file or directory`. Good: `Error: Config file not found at ~/.myapp/config.toml. Create one with 'myapp init'.`. Every error message should state: what went wrong, what the user can do about it, and a command to fix it. Stack traces are for development; user-facing errors are for production.
+
+
+## Configuration Discovery
+
+CLI tools should look for config files in order: CLI flags > environment variables > project-local config > user config (`~/.config/`) > system config (`/etc/`). Each level overrides the previous. `--verbose` flag should print which config files were loaded and their final merged values — invaluable for debugging.
+
+
+## Case Study: astro-tasks
+
+astro-tasks follows all these patterns. Click for subcommands (notify, health, dashboard), Rich for tables and panels, comprehensive `--help` with examples, and a clear error message format. PyPI publication with automated version bumps made distribution seamless.
+
+
+---
+
+A great CLI respects the user's time and attention. Clever defaults, meaningful progress indicators, and actionable error messages transform a usable tool into one people actually enjoy running.
+
+[View on GitHub](https://github.com/3ni8ma/astro-tasks)

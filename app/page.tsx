@@ -1,6 +1,20 @@
 import BackgroundEffect from "@/components/BackgroundEffect";
 import GlassCard from "@/components/GlassCard";
 import GlowButton from "@/components/GlowButton";
+import type { Metadata } from "next";
+import { siteConfig } from "@/lib/site";
+
+export const metadata: Metadata = {
+  title: "Aarush Karak | Software Developer, AI & Spatial Computing",
+  description: siteConfig.description,
+  alternates: { canonical: "/" },
+  openGraph: {
+    type: "website",
+    url: siteConfig.url,
+    title: "Aarush Karak | Software Developer, AI & Spatial Computing",
+    description: siteConfig.description,
+  },
+};
 
 const projects = [
   {

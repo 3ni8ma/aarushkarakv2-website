@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Space_Grotesk, JetBrains_Mono } from "next/font/google";
 import Script from "next/script";
+import { siteConfig } from "@/lib/site";
 import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
 import LoadingScreen from "@/components/LoadingScreen";
@@ -20,9 +21,75 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Aarush Karak | Portfolio",
-  description:
-    "Software developer, spatial computing & AI enthusiast. Founder @ TheCoderBros. Building the future one project at a time.",
+  metadataBase: new URL(siteConfig.url),
+  title: {
+    default: "Aarush Karak | Software Developer, AI & Spatial Computing",
+    template: "%s | Aarush Karak",
+  },
+  description: siteConfig.description,
+  keywords: [...siteConfig.keywords],
+  authors: [{ name: siteConfig.name, url: siteConfig.url }],
+  creator: siteConfig.name,
+  openGraph: {
+    type: "website",
+    locale: siteConfig.locale,
+    url: siteConfig.url,
+    siteName: siteConfig.name,
+    title: "Aarush Karak | Software Developer, AI & Spatial Computing",
+    description: siteConfig.description,
+    images: [{ url: siteConfig.ogImage, width: 1200, height: 630, alt: siteConfig.name }],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Aarush Karak | Software Developer, AI & Spatial Computing",
+    description: siteConfig.description,
+    images: [siteConfig.ogImage],
+  },
+  robots: {
+    index: true,
+    follow: true,
+    googleBot: {
+      index: true,
+      follow: true,
+      "max-image-preview": "large",
+      "max-snippet": -1,
+    },
+  },
+};
+
+const personJsonLd = {
+  "@context": "https://schema.org",
+  "@type": "Person",
+  name: siteConfig.name,
+  url: siteConfig.url,
+  image: `${siteConfig.url}/images/profile.jpg`,
+  jobTitle: "Software Developer",
+  description: siteConfig.description,
+  address: {
+    "@type": "PostalAddress",
+    addressLocality: "Toronto",
+    addressRegion: "ON",
+    addressCountry: "CA",
+  },
+  worksFor: {
+    "@type": "Organization",
+    name: "TheCoderBros",
+    url: siteConfig.socials.thecoderbros,
+  },
+  knowsAbout: [
+    "Software Development",
+    "Spatial Computing",
+    "Artificial Intelligence",
+    "Three.js",
+    "React",
+    "Web Development",
+  ],
+  sameAs: [
+    siteConfig.socials.github,
+    siteConfig.socials.linkedin,
+    siteConfig.socials.instagram,
+    siteConfig.socials.credly,
+  ],
 };
 
 export default function RootLayout({
@@ -38,6 +105,10 @@ export default function RootLayout({
       <head>
         <link rel="preconnect" href="https://cdn.aidesigner.ai" />
         <link rel="dns-prefetch" href="https://cdn.aidesigner.ai" />
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(personJsonLd) }}
+        />
       </head>
       <body className="bg-[#0d1117] text-white antialiased min-h-screen flex flex-col">
         <LiquidGlassFilter />

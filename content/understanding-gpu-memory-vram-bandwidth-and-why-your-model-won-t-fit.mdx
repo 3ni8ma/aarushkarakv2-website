@@ -1,0 +1,45 @@
+export const title = "Understanding GPU Memory: VRAM, Bandwidth, and Why Your Model Won't Fit"
+export const date = "August 10, 2026"
+export const tags = ["GPU", "CUDA", "VRAM", "Memory", "ML Infrastructure"]
+export const repo = "https://github.com/3ni8ma/aura-finance"
+
+## HBM Architecture
+
+GPU memory is the most constrained resource in ML. This post explains HBM architecture, memory bandwidth vs compute, how model size translates to VRAM usage, and techniques (offloading, recomputation, sharding) to fit larger models.
+
+
+## HBM Architecture
+
+High Bandwidth Memory (HBM) stacks DRAM dies vertically with through-silicon vias (TSVs) connecting them. HBM2e offers 2.4 GB/s per pin, HBM3 reaches 6.4 GB/s. The A100 has 80GB HBM2e at 2TB/s, the H100 has 80GB HBM3 at 3.35TB/s. Understanding this hierarchy explains why memory bandwidth — not FLOPs — is the bottleneck for transformer inference.
+
+
+## Where Does the Memory Go?
+
+A 70B parameter model at FP16 needs 70e9 * 2 bytes = 140GB just for weights. Adam optimizer states add another 140GB (momentum + variance at FP32). Gradients add 70GB at FP16. Activations for a 4096-token sequence add ~15GB. Total: ~365GB for training on a single GPU — why 8x A100s are needed.
+
+
+## Memory-Efficient Attention
+
+Standard attention computes S = Q@K^T (shape: batch x heads x seq x seq), materializing the full attention matrix. FlashAttention tiles the computation, never storing the full S matrix — reducing memory from O(N^2) to O(N). For a 4096-token sequence, this saves ~500MB per layer. For 80 layers: 40GB saved.
+
+
+## Activation Recomputation (Checkpointing)
+
+During forward pass, activations are stored for the backward pass. Checkpointing saves only a subset of activations and recomputes the rest during backward. The memory savings are proportional to how many checkpoints are kept. Trading 20% more compute for 50-80% less memory is often worth it.
+
+
+## Model Parallelism: Sharding Across GPUs
+
+Model parallelism splits layers across devices. Tensor parallelism shards individual matrix multiplies across GPUs (requires high-bandwidth interconnect like NVLink). Pipeline parallelism assigns layer groups to different devices. Fully Sharded Data Parallelism (FSDP) shards optimizer states, gradients, and parameters across data-parallel workers.
+
+
+## CPU Offloading
+
+When even sharded memory doesn't fit, parameters are offloaded to CPU RAM and fetched to GPU on demand. This is slow (PCIe 4.0 x16: ~32GB/s vs HBM's 2TB/s) but enables training models up to ~10x larger than GPU memory alone. Inference offloading is more practical because weights are static and prefetching is predictable.
+
+
+---
+
+GPU memory management is the defining engineering challenge of large-scale ML. Understanding the memory hierarchy, activation memory costs, and parallelism strategies is essential for fitting increasingly large models into available hardware.
+
+[View on GitHub](https://github.com/3ni8ma/aura-finance)

@@ -1,0 +1,45 @@
+export const title = "Software Architecture for Solo Developers"
+export const date = "August 11, 2026"
+export const tags = ["Architecture", "Solo Dev", "Software Design", "Monolith"]
+export const repo = "https://github.com/3ni8ma/3ni8ma"
+
+## The Modular Monolith
+
+Building maintainable systems alone requires different tradeoffs than team development. This post covers modular monoliths, decision logs, architectural fitness functions, and when to accept tech debt as a solo founder.
+
+
+## The Modular Monolith
+
+Microservices require DevOps overhead, network debugging, distributed tracing, and team coordination — all costs a solo dev shouldn't pay. A modular monolith divides code into bounded contexts (packages/modules) with strict internal APIs, keeping deployment simplicity while enforcing architectural boundaries. Extract to services only when scaling forces it.
+
+
+## Architecture Decision Records
+
+ADRs document every significant architectural choice: context, decision, consequences. A one-page ADR saves hours of rediscovering why you chose PostgreSQL over MongoDB, or why you went with polling over WebSockets. When you revisit a component months later, the ADR tells you the reasoning — and whether the constraints have changed.
+
+
+## Fitness Functions
+
+Automated guards that protect architectural decisions: circular dependency checks, package-level API surface tracking, database query analysis (no N+1), and response time budgets. CI running these checks catches regressions that a solo dev would miss until deployment. Examples: forbid direct database access from controller modules, enforce max 200 lines per file.
+
+
+## Strategic vs Tactical Tech Debt
+
+Tactical tech debt (quick fix now, clean later) is necessary for solo devs with limited time. Strategic tech debt (architectural shortcuts that compound) must be avoided. The distinction: can the shortcut be fixed in 30 minutes without rewriting surrounding code? If yes, tactical. If it affects the entire module's interface, strategic.
+
+
+## Testing Without a QA Team
+
+Integration tests beat unit tests for solo projects — they cover real user workflows and catch more bugs per test written. The testing pyramid for solo devs: 60% integration (API routes, DB queries), 30% unit (core business logic, complex calculations), 10% E2E (critical user paths). Prioritize tests that would wake you up at 3 AM if they broke.
+
+
+## Documentation That Stays Fresh
+
+Code comments rot. READMEs become fiction. The only documentation that stays accurate: the code itself (readable with good naming), integration tests (show how components connect), and ADRs (why decisions were made). Everything else — docstrings, inline comments explaining the obvious — is noise.
+
+
+---
+
+Solo development architecture is about maximizing impact per unit of complexity. Modular monoliths, ADRs, and strategic testing practices let one person build and maintain systems that would otherwise require a team.
+
+[View on GitHub](https://github.com/3ni8ma/3ni8ma)

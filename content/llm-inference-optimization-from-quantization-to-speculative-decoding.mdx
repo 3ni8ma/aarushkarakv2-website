@@ -1,0 +1,45 @@
+export const title = "LLM Inference Optimization: From Quantization to Speculative Decoding"
+export const date = "August 13, 2026"
+export const tags = ["LLM", "Inference", "Quantization", "Optimization", "MLOps"]
+export const repo = "https://github.com/3ni8ma/HELIOS"
+
+## The Memory Wall Problem
+
+Running large language models efficiently requires more than just powerful GPUs. This post covers quantization (GPTQ, AWQ, GGUF), KV-cache optimization, speculative decoding, and how techniques like FlashAttention reduce memory bandwidth bottlenecks.
+
+
+## The Memory Wall Problem
+
+LLM inference is bottlenecked by memory bandwidth, not compute. Each token generation requires loading the entire model weights from HBM to compute units. For a 70B parameter model at FP16, that's 140GB per forward pass — exceeding the capacity of a single A100 (80GB). This section explains the arithmetic intensity model and why memory bandwidth dominates.
+
+
+## Quantization: 4-bit and Below
+
+Post-training quantization reduces model weights from FP16 (16-bit) to 4-bit or even 2-bit representations with minimal accuracy loss. GPTQ uses approximate second-order information to calibrate quantization. AWQ observes that 1% of weights (salient channels) disproportionately affect output and protects them. GGUF/GGML enables CPU inference by combining quantization with memory-mapped model loading.
+
+
+## KV-Cache Optimization
+
+The key-value cache grows linearly with sequence length and batch size — for a 4096-token context at 80 layers, it consumes ~30GB. Multi-Query Attention (MQA) and Grouped-Query Attention (GQA) share KV heads across query heads, reducing cache size by 4-8x. PagedAttention (vLLM) eliminates fragmentation by managing cache in fixed-size blocks, similar to virtual memory paging.
+
+
+## Speculative Decoding
+
+Draft models (small, fast) propose multiple tokens in parallel; the target model (large, accurate) verifies them in a single forward pass. For a 70B model with a 125M draft, speculative decoding achieves 2-3x throughput improvement with zero accuracy loss — verified outputs are guaranteed to match the target model's distribution.
+
+
+## FlashAttention and IO-Aware Algorithms
+
+Standard attention reads the full Q, K, V matrices from HBM, writes to SRAM, then writes S and P back. FlashAttention tiles the matrices and processes them in SRAM without materializing the full attention matrix — reducing HBM reads from O(N^2) to O(N). This translates to 2-4x speedup on long sequences.
+
+
+## Production Deployment Patterns
+
+Serving frameworks like vLLM, TensorRT-LLM, and TGI handle continuous batching (dynamically adding/removing sequences), tensor parallelism across GPUs, and prefix caching. Continuous batching alone improves throughput 10-20x over static batching in production workloads.
+
+
+---
+
+The gap between raw model capability and practical deployment is narrowing rapidly. Applying quantization, KV-cache optimization, and speculative decoding can reduce inference costs by 5-10x while maintaining output quality.
+
+[View on GitHub](https://github.com/3ni8ma/HELIOS)

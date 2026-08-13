@@ -12,6 +12,7 @@ export const siteConfig = {
     instagram: "https://www.instagram.com/3ni8ma_rush/",
     credly: "https://www.credly.com/users/aarush-karak",
     kaggle: "https://www.kaggle.com/aarushkarak",
+    devto: "https://dev.to/3ni8ma",
     thecoderbros: "https://thecoderbros.vercel.app",
   },
   keywords: [

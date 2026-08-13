@@ -89,6 +89,7 @@ const personJsonLd = {
     siteConfig.socials.instagram,
     siteConfig.socials.credly,
     siteConfig.socials.kaggle,
+    siteConfig.socials.devto,
   ],
 };
 

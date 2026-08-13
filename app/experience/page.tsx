@@ -5,7 +5,7 @@ import type { Metadata } from "next";
 export const metadata: Metadata = {
   title: "Experience",
   description:
-    "Experience of Aarush Karak — Co-Founder & CEO of TheCoderBros, Application Developer at Hack Club, open-source contributor, and builder of AI, 3D web and spatial computing applications.",
+    "Experience of Aarush Karak — Co-Founder & CEO of TheCoderBros, open-source contributor, and builder of AI, 3D web and spatial computing applications.",
   alternates: { canonical: "/experience" },
 };
 
@@ -36,33 +36,6 @@ const experiences = [
       "Participated in 6-week Agile Voyage cohort building React/Node.js/Python/PostgreSQL applications with automated data pipelines.",
     href: "https://www.chingu.io",
     logo: "/images/logos/chingu.png",
-  },
-  {
-    role: "Stardance Challenge — Platform Engineer",
-    org: "Hack Club",
-    period: "June 2026 - Aug 2026",
-    description:
-      "Built for Hack Club's largest STEM event of the summer, in partnership with NASA, GitHub, and AMD. Designed and shipped astro-tasks, a Python CLI developer dashboard that checks GitHub notifications, coding stats, and local repo health in one command. Published on PyPI, MIT licensed, with modular architecture integrating GitHub CLI and git health checks.",
-    href: "https://hackclub.com",
-    logo: "/images/logos/hackclub.svg",
-  },
-  {
-    role: "Hackatime Coder",
-    org: "Hack Club",
-    period: "May 2026 - Aug 2026",
-    description:
-      "Tracked 1000+ hours of coding activity across 7 projects using Hackatime, an open-source WakaTime-compatible analytics platform. Maintained a 100% heartbeat acceptance rate through automated 24/7 pipeline infrastructure.",
-    href: "https://hackclub.com",
-    logo: "/images/logos/hackclub.svg",
-  },
-  {
-    role: "OAuth Application Developer",
-    org: "Hack Club",
-    period: "June 2025 - July 2026",
-    description:
-      "Developed full-stack mobile/web app platform with serverless reactive architecture and optimized real-time sync.",
-    href: "https://hackclub.com",
-    logo: "/images/logos/hackclub.svg",
   },
   {
     role: "Web Developer & Freelancer",

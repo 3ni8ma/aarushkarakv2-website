@@ -8,7 +8,7 @@ export const siteConfig = {
   locale: "en_US",
   socials: {
     github: "https://github.com/3ni8ma",
-    linkedin: "https://www.linkedin.com/in/aarush-karak-260257321/",
+    linkedin: "https://www.linkedin.com/in/aarush-karak/",
     instagram: "https://www.instagram.com/3ni8ma_rush/",
     credly: "https://www.credly.com/users/aarush-karak",
     kaggle: "https://www.kaggle.com/aarushkarak",

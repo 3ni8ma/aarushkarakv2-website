@@ -63,6 +63,7 @@ const personJsonLd = {
   image: `${siteConfig.url}/images/profile.jpg`,
   jobTitle: "Software Developer",
   description: siteConfig.description,
+  email: "mailto:worldshaans@gmail.com",
   address: {
     "@type": "PostalAddress",
     addressLocality: "Toronto",
@@ -87,6 +88,7 @@ const personJsonLd = {
     siteConfig.socials.linkedin,
     siteConfig.socials.instagram,
     siteConfig.socials.credly,
+    siteConfig.socials.kaggle,
   ],
 };
 

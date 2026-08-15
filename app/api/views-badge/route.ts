@@ -1,25 +1,56 @@
 export const dynamic = "force-dynamic";
 
-const KOMAREV_URL =
-  "https://komarev.com/ghpvc/?username=3ni8ma&style=flat-square&color=00F5D4&label=PROFILE+VIEWS&base=145281";
+const STORE_ID = "store_KPTdDsAOsL8cyV3B";
+const PATHNAME = "views-badge/count.json";
+const SEED = 145288;
 
 function escapeXml(s: string) {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-export async function GET() {
-  let count = "?";
-  try {
-    const res = await fetch(KOMAREV_URL, { cache: "no-store" });
-    const svg = await res.text();
-    const match = svg.match(/>([\d.,]+)<\/text>/);
-    if (match) count = match[1];
-  } catch {}
+async function readCount(): Promise<{ missing: boolean; value?: number }> {
+  const res = await fetch(
+    `https://${STORE_ID}.public.blob.vercel-storage.com/${PATHNAME}`,
+    { cache: "no-store" },
+  );
+  if (res.status === 404) return { missing: true };
+  if (!res.ok) throw new Error("blob read failed");
+  const json = await res.json();
+  return { missing: false, value: typeof json?.count === "number" ? json.count : undefined };
+}
 
-  const text = `PROFILE VIEWS ${count}`;
+async function writeCount(count: number) {
+  await fetch(`https://${STORE_ID}.blob.vercel-storage.com/${PATHNAME}`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${process.env.BLOB_READ_WRITE_TOKEN}`,
+    },
+    body: JSON.stringify({ count, updatedAt: new Date().toISOString() }),
+  });
+}
+
+export async function GET() {
+  let count: number;
+  try {
+    const result = await readCount();
+    if (result.missing) {
+      count = SEED;
+      await writeCount(count);
+    } else if (result.value === undefined) {
+      count = SEED;
+      await writeCount(count);
+    } else {
+      count = result.value + 1;
+      await writeCount(count);
+    }
+  } catch {
+    count = SEED;
+  }
+
+  const text = `PROFILE VIEWS ${count.toLocaleString("en-US")}`;
   const width = Math.ceil(text.length * 6.2) + 28;
-  const stamp = Math.floor(Date.now() / 10000) * 10000;
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="28" role="img" aria-label="${escapeXml(text)}"><title>${escapeXml(text)} t=${stamp}</title><g shape-rendering="crispEdges"><rect width="${width}" height="28" rx="4" fill="#00F5D4"/></g><g fill="#FF0055" text-anchor="middle" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" text-rendering="geometricPrecision" font-size="100" font-weight="bold"><text transform="scale(.1)" x="${width * 5}" y="175">${escapeXml(text)}</text></g></svg>`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="28" role="img" aria-label="${escapeXml(text)}"><title>${escapeXml(text)}</title><g shape-rendering="crispEdges"><rect width="${width}" height="28" rx="4" fill="#00F5D4"/></g><g fill="#FF0055" text-anchor="middle" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" text-rendering="geometricPrecision" font-size="100" font-weight="bold"><text transform="scale(.1)" x="${width * 5}" y="175">${escapeXml(text)}</text></g></svg>`;
 
   return new Response(svg, {
     headers: {

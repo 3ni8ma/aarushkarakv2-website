@@ -18,7 +18,8 @@ export async function GET() {
 
   const text = `PROFILE VIEWS ${count}`;
   const width = Math.ceil(text.length * 6.2) + 28;
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="28" role="img" aria-label="${escapeXml(text)}"><title>${escapeXml(text)}</title><g shape-rendering="crispEdges"><rect width="${width}" height="28" rx="4" fill="#00F5D4"/></g><g fill="#FF0055" text-anchor="middle" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" text-rendering="geometricPrecision" font-size="100" font-weight="bold"><text transform="scale(.1)" x="${width * 5}" y="175">${escapeXml(text)}</text></g></svg>`;
+  const stamp = Math.floor(Date.now() / 10000) * 10000;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="28" role="img" aria-label="${escapeXml(text)}"><title>${escapeXml(text)} t=${stamp}</title><g shape-rendering="crispEdges"><rect width="${width}" height="28" rx="4" fill="#00F5D4"/></g><g fill="#FF0055" text-anchor="middle" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" text-rendering="geometricPrecision" font-size="100" font-weight="bold"><text transform="scale(.1)" x="${width * 5}" y="175">${escapeXml(text)}</text></g></svg>`;
 
   return new Response(svg, {
     headers: {

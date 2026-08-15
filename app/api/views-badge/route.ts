@@ -1,6 +1,6 @@
 export const dynamic = "force-dynamic";
 
-const STORE_ID = "store_KPTdDsAOsL8cyV3B";
+const STORE_ID = "KPTdDsAOsL8cyV3B";
 const PATHNAME = "views-badge/count.json";
 const SEED = 145288;
 
@@ -20,11 +20,16 @@ async function readCount(): Promise<{ missing: boolean; value?: number }> {
 }
 
 async function writeCount(count: number) {
-  await fetch(`https://${STORE_ID}.blob.vercel-storage.com/${PATHNAME}`, {
+  await fetch(`https://vercel.com/api/blob/?pathname=${PATHNAME}`, {
     method: "PUT",
     headers: {
-      "Content-Type": "application/json",
       Authorization: `Bearer ${process.env.BLOB_READ_WRITE_TOKEN}`,
+      "x-vercel-blob-store-id": STORE_ID,
+      "x-api-version": "12",
+      "x-vercel-blob-access": "public",
+      "x-content-type": "application/json",
+      "x-add-random-suffix": "0",
+      "x-allow-overwrite": "1",
     },
     body: JSON.stringify({ count, updatedAt: new Date().toISOString() }),
   });

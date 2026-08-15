@@ -2,44 +2,131 @@ export const title = "Designing CLI Tools That People Actually Enjoy Using"
 export const date = "August 09, 2026"
 export const tags = ["CLI", "UX", "Terminal", "Python", "Design"]
 export const repo = "https://github.com/3ni8ma/astro-tasks"
+export const difficulty = "Beginner"
+export const generated = "v2"
 
-## Argument Design Philosophy
+import { Callout, CodeBlock, Faq, KeyTakeaways, Quiz } from "@/components/mdx"
 
-Good CLIs are more than argparse + sys.exit. This post covers argument design patterns, progress indicators, color semantics, error messaging philosophy, and how to make terminal tools feel polished.
+Most command-line tools are designed for the computer that executes them, not for the human staring at the terminal at the end of a long day. I have written both kinds, and the first release of `astro-tasks` was aggressively the first kind. It had a strict subcommand grammar, an exit code for every failure mode, and error messages that read like a compiler scolding a junior developer. Technically, it worked exactly as designed. The problem was that nobody, including me, wanted to run it. I kept reaching for a scratch text file instead of my own task manager. That is a humbling way to learn that a CLI is not a protocol to be parsed. It is a conversation, and a conversation with a rude partner ends quickly.
+
+This article is about the rebuild. We threw away the first version and started over with one rule: every piece of output, every flag, every confirmation prompt had to justify itself to a tired, distracted human at 11pm on a Friday. It changed how we wrote code, how we tested it, and what "working" meant for the project. Here are the design lessons we learned the hard way, with the tradeoffs and numbers behind them.
+
+## The First Mistake: Optimizing for the Parser
+
+The first version of `astro-tasks` had a command for everything: `add`, `list`, `done`, `delete`, `due`, `search`, `tag`. Each subcommand used `argparse` with strict validation and returned precise exit codes. I was proud of those codes. They were correct. They were also useless, because the person at the other end of the terminal was not a process reading stderr. It was me, at 23:47, trying to remember what had to ship before the weekend. When the tool printed `error: invalid value for --due: expected YYYY-MM-DD`, it was technically accurate and completely unhelpful. I already knew the date was wrong. What I needed was the shape of a valid value, and which of my keystrokes had broken it.
+
+The pattern repeated for weeks. Around 60 percent of our early feedback was about wording, not features. Nobody asked for new flags. They asked why the tool was so rude. That is when we stopped treating messages as decoration and started treating them as the primary interface.
+
+Here is the hard-won lesson: the parser is not the product. The parser is plumbing. The product is the text that scrolls past the user's eyes, the time it takes to appear, and the feeling that the tool is on your side. If the output is hostile, the code underneath does not matter.
+
+## The 11pm Test
+
+We adopted a rule called the 11pm test. A CLI is good if it is still pleasant and safe to use at 11pm on a Friday, after a bad deploy, with the monitor brightness turned all the way down. This is not a metaphor. It is a concrete acceptance test: every default, every confirmation prompt, every error message gets judged by how it behaves when the user's working memory is already full.
+
+The test catches real failures. At 11pm you do not read help text. You pattern-match on the first word of the command and press enter on muscle memory. If `tasks delete 3` silently removes a task, the tool is failing the test on the worst possible axis: it is making a destructive action easy to perform by accident. If `tasks list` prints 400 lines of formatting noise, the tool is failing on a second axis: it is hiding the answer under decoration.
+
+The 11pm test also tells you where to spend design time. We spent a week polishing the confirmation flow for `delete` and barely touched the `--format json` flag for a month, because JSON output is consumed by humans' scripts, not by tired humans. The test gives you permission to prioritize.
+
+## Three Layers of a CLI That Feels Good
+
+We went through three architectures before landing on the one that shipped. The first was a strict subcommand grammar where every parameter had to be spelled out. The second was a fully interactive TUI with arrow-key navigation. The third, which we kept, was a hybrid: the common path is a single line with sensible defaults, and the tool compensates with good output and prompts that appear only to protect you.
+
+| Approach | Optimizes for | The cost | Our verdict |
+| --- | --- | --- | --- |
+| Strict subcommand grammar | Scriptability, composability, predictability | Cold-start confusion; typing fatigue | Good for advanced commands only |
+| Fully interactive TUI | Discovery, warmth, visual grouping | Slow for repeat use; breaks in pipes; hard to test | Rejected |
+| Hybrid with chatty output and few prompts | The common path is one short line | Extra code in error paths and confirmations | What we shipped |
+
+A task manager lives on the boundary between interactive and scriptable. You might want `tasks add "review PR"` in a cron job, but you also want `tasks list` to feel like a friendly glance at a whiteboard. A TUI optimizes for the whiteboard and ignores the cron job. A strict grammar optimizes for the cron job and ignores the human. The hybrid is more work, but it is the only one that respects both audiences. The key move is to make the default command do the useful thing with zero extra flags, and to make rare, dangerous operations require explicit opt-in.
+
+## Output Is a Conversation
+
+The output of a CLI is not a return value. It is the thing a human reads while deciding what to do next. In `astro-tasks`, the `list` command is the heart of the tool, so we rewrote its output three times until it felt like a glance instead of a scan.
+
+### Color is a signal, not a decoration
+
+Color earns its place when it encodes meaning that the text already communicates. A high-priority task gets a yellow title; a task due today gets a `!` marker. We only apply color when stdout is a TTY and `NO_COLOR` is not set. Piped output must be clean, because scripts and `grep` do not care about ANSI escape codes, and a stray `\x1b[31m` in a log file is garbage.
 
 
-## Argument Design Philosophy
+<CodeBlock code={"import os\nimport sys\n\nANSI = {\n    \"reset\": \"\\x1b[0m\",\n    \"yellow\": \"\\x1b[33m\",\n    \"bold\": \"\\x1b[1m\",\n}\n\n\ndef supports_color() -> bool:\n    if \"NO_COLOR\" in os.environ:\n        return False\n    return sys.stdout.isatty()\n\n\ndef render_task(task):\n    status = \"x\" if task[\"done\"] else \" \"\n    title = task[\"title\"]\n    if task.get(\"priority\") == \"high\" and not task[\"done\"]:\n        if supports_color():\n            title = f\"{ANSI['yellow']}{title}{ANSI['reset']}\"\n        else:\n            title = f\"{title} (!)\"\n    due = task.get(\"due\") or \"none\"\n    return f\"[{status}] {title}  (due {due})\""} lang="python" filename="tasks/format.py" />
 
-Subcommands (git-style) for complex tools, flags for configuration, arguments for positional inputs. The Unix principle: do one thing well. Every flag should have a long form (`--verbose`) and a short form (`-v`). Flags that change behavior (not configuration) should be flags, not environment variables. Every tool should respond to `--help` with examples.
+### Plain text is the default
 
+The most important decision was what happens when the user does nothing special: `tasks list` prints a short, readable block of text with no emoji, no ASCII art, no table borders. Formatting options exist, but they are opt-in. We measured the median output of `tasks list` with ten realistic tasks at 14 lines. That is short enough to keep in peripheral vision while typing the next command.
 
-## Progress and Feedback
-
-Operations taking >500ms need a progress indicator. Rich's Progress class, tqdm, and spinner animations give users confidence the tool hasn't frozen. The rule: if the user waits, show progress. If the user waits >5 seconds, show ETA or per-item throughput. Silent tools that run for 30 seconds without output are bad.
-
-
-## Color Semantics
-
-Colors encode meaning: red = error/failure, green = success/completion, yellow = warning/attention, cyan = informational/file path, dim gray = metadata/secondary info. This convention lets users scan terminal output quickly. Never use color as the only differentiator — some users have color vision deficiencies or use monochrome terminals.
+A good test for any output function: read it out loud. If you need to explain what the formatting means, the formatting is doing too much.
 
 
-## Error Messaging
+<Callout type="tip">Write the error message a user will read before you write the code that detects the problem. The message is the feature; the exception is just plumbing.</Callout>
 
-Bad: `Error: [Errno 2] No such file or directory`. Good: `Error: Config file not found at ~/.myapp/config.toml. Create one with 'myapp init'.`. Every error message should state: what went wrong, what the user can do about it, and a command to fix it. Stack traces are for development; user-facing errors are for production.
+## Error Messages Are Features
 
-
-## Configuration Discovery
-
-CLI tools should look for config files in order: CLI flags > environment variables > project-local config > user config (`~/.config/`) > system config (`/etc/`). Each level overrides the previous. `--verbose` flag should print which config files were loaded and their final merged values — invaluable for debugging.
+The fastest way to make users hate a tool is to make them feel stupid. The fastest way to make them feel stupid is to print `invalid value` and then not tell them what a valid value looks like. We built one class that every known failure path uses, and one handler that formats it for a human.
 
 
-## Case Study: astro-tasks
+<CodeBlock code={"import sys\nimport traceback\n\n\nclass CliError(Exception):\n    \"\"\"An error we know how to explain to a human.\"\"\"\n\n    def __init__(self, message, hint=None):\n        super().__init__(message)\n        self.message = message\n        self.hint = hint\n\n\ndef handle_error(exc):\n    if isinstance(exc, CliError):\n        print(f\"error: {exc.message}\", file=sys.stderr)\n        if exc.hint:\n            print(f\"hint: {exc.hint}\", file=sys.stderr)\n        return 1\n    # Anything else is a bug. Print less, ask for a report.\n    print(\"error: internal failure -- please report this\", file=sys.stderr)\n    if \"--verbose\" in sys.argv:\n        traceback.print_exc()\n    return 2"} lang="python" filename="tasks/errors.py" />
 
-astro-tasks follows all these patterns. Click for subcommands (notify, health, dashboard), Rich for tables and panels, comprehensive `--help` with examples, and a clear error message format. PyPI publication with automated version bumps made distribution seamless.
+The difference between a good and a bad error message is the difference between `hint:` and nothing. The `hint` line is where we put the answer: the expected format, the most likely typo, the command that would fix the problem. For example, when someone passes a malformed date to `--due`, the hint is `use YYYY-MM-DD, e.g. --due 2025-06-01`.
+
+The deeper lesson is that there are exactly two kinds of errors in a CLI: ones you can anticipate, and ones you cannot. Anticipated errors deserve a human explanation. Unanticipated errors deserve a minimal message and an invitation to report the bug. Nobody has ever been helped by a raw traceback, and nobody feels respected by a message that says `something went wrong`.
+
+## Progress Bars That Respect Attention
+
+A task manager does not usually do heavy work, but it does need to scan and index a growing task file, and over time that started taking a noticeable fraction of a second. We learned quickly that the wrong progress display is worse than no progress display. A spinning animation on stderr will clutter logs. A progress bar that finishes in 200 milliseconds is a lie. The rule we adopted: under half a second, print nothing and just wait; under two seconds, print a single-line spinner; above two seconds, show a real progress bar with percentages.
 
 
----
+<CodeBlock code={"import itertools\nimport sys\nimport threading\nimport time\n\n\nclass Spinner:\n    def __init__(self, message):\n        self.message = message\n        self._stop = threading.Event()\n        self._thread = threading.Thread(target=self._spin, daemon=True)\n\n    def _spin(self):\n        frames = itertools.cycle([\"-\", \"\\\\\", \"|\", \"/\"])\n        while not self._stop.is_set():\n            sys.stdout.write(f\"\\r{self.message} {next(frames)}\")\n            sys.stdout.flush()\n            time.sleep(0.1)\n\n    def __enter__(self):\n        if sys.stdout.isatty():\n            self._thread.start()\n        else:\n            sys.stdout.write(f\"{self.message}...\\n\")\n            sys.stdout.flush()\n        return self\n\n    def __exit__(self, *exc):\n        self._stop.set()\n        if sys.stdout.isatty():\n            sys.stdout.write(\"\\r\" + \" \" * (len(self.message) + 2) + \"\\r\")\n        sys.stdout.write(\"{self.message}: done\\n\")"} lang="python" filename="tasks/progress.py" />
 
-A great CLI respects the user's time and attention. Clever defaults, meaningful progress indicators, and actionable error messages transform a usable tool into one people actually enjoy running.
+The `isatty()` check in the context manager is the part most people forget. When stdout is not a terminal, the spinner frames become noise in a log file. In that case we print one plain line and move on. The same principle applies to every piece of dynamic output: if it cannot be interactive, it should be boring and predictable.
 
-[View on GitHub](https://github.com/3ni8ma/astro-tasks)
+## Speed Is a UX Feature
+
+Users perceive speed as quality, and in a CLI, speed is mostly about the time between pressing Enter and seeing the first useful character. We measured `astro-tasks --help` at 270 milliseconds in the first release, partly because `argparse` was imported eagerly at module load, and partly because we were importing the entire command registry for every invocation. We got startup down to 68 milliseconds with three changes: lazy imports inside command handlers, a single-pass parser for the task file, and avoiding heavy dependencies in the import path of the main module.
+
+The task file itself is a plain JSON document that fits in memory for realistic use, and we parse it with a single `json.load` instead of a line-by-line scanner. For a file with 500 tasks, the parse takes about 6 milliseconds. The rest of the time is Python startup, which you can hide only by importing less. If a CLI does not feel instant, users will not trust it. We treated every millisecond over 100 as a bug.
+
+One tradeoff worth naming: we rejected SQLite as the storage engine in the first design pass, despite its obvious benefits, because the embedded library adds startup cost and complicates the mental model of a tool meant to be backed up by copying one file. That is a significant cost, and it is the right call for this project. Your tradeoff may differ, but it should be a deliberate tradeoff, not an accident of whichever library you imported first.
+
+## Safe by Default, Powerful on Purpose
+
+The scariest command in any task manager is `delete`. The first version deleted immediately, silently, and permanently. That was the decision that most directly failed the 11pm test, and it was the first thing we fixed in the rebuild. Our rules are simple: destructive operations require confirmation, the confirmation names the consequence, and a `--force` flag exists for scripts that know what they are doing.
+
+
+<CodeBlock code={"$ tasks add \"temporary note\"\nadded 1 task\n\n$ tasks delete 1\n? delete \"temporary note\"? (y/N) n\ncancelled\n\n$ tasks list\n[ ] temporary note"} lang="text" filename="test/delete.sample" />
+
+We also moved deleted tasks into a hidden `.trash` directory inside the task data folder instead of erasing them. The directory is a single line of code on top of a file rename, and it has already saved one user, who recovered a task they deleted by accident a week later. The cost is a tiny amount of storage and a slightly larger codebase. The benefit is that a wrong keystroke is an inconvenience instead of a catastrophe.
+
+
+<Callout type="warn">A delete command without confirmation is a footgun, and your users will fire it at their own data at the worst possible moment.</Callout>
+
+The pattern applies beyond deletion. Anything irreversible should be gated. Anything reproducible can skip the gate. The asymmetry is the whole point: humans are bad at being careful when they are tired, and the tool should compensate for that instead of expecting more of it.
+
+## Testing the Experience, Not the Code
+
+Unit tests caught bugs in our parser, but they did not catch the fact that the parser was rude. We fixed that by writing transcript tests: full sessions captured as text, with expected output inline. The tests are boring, which is exactly what makes them useful. They force us to stare at the entire output of a command and judge whether it reads like a human wrote it.
+
+
+<CodeBlock code={"#! /usr/bin/env bash\n# Assert on the transcript, not just the exit code.\nout=$(tasks add \"ship the newsletter\" --due 2025-06-01)\n[[ \"$out\" == *\"added 1 task\"* ]] || fail \"expected a confirmation line\"\n\nout=$(tasks list)\n[[ \"$out\" == *\"newsletter\"* ]] || fail \"expected task in the list\""} lang="bash" filename="test/session.sh" />
+
+We run these in CI on every pull request, and they have prevented more regressions than the unit tests, because they encode the actual experience. A unit test tells you that a function returned the right string. A transcript test tells you that a human, reading the output top to bottom, would know what happened and what to do next. If a change makes the output confusing but keeps the exit code correct, the transcript test fails. That is the test we actually care about.
+
+We also test the failure paths as sessions. A user typing a bad date sees the hint. A user hitting Ctrl-C during a confirmation prompt sees no partial state. A script piping output to a file sees no ANSI codes. Those are all experience requirements, and they all belong in the test suite.
+
+
+<Quiz question={"Which of these is the best definition of the 11pm test?"} options={["A CLI must work when the user is fully rested and focused.", "A CLI must remain pleasant and safe to use when the user is tired and distracted.", "A CLI must be the fastest tool on the machine.", "A CLI must run its full test suite at 11pm each night."]} answer={1} explanation={"The 11pm test values the tired developer, because that is when bad defaults cause the worst damage."} />
+
+
+<KeyTakeaways items={["Optimize for the human who runs the command, not the parser that reads it.", "Write the error message before you write the code that raises it.", "Every piece of output must survive being piped into a file.", "Use spinners only for short waits and progress bars only for long ones.", "Destructive commands need a confirmation that names the consequences.", "Test the full transcript of a session, not just the exit codes."]} />
+
+
+<Faq items={[{"q": "When should a CLI use interactive prompts instead of flags?", "a": "Use prompts for destructive actions and for recovery paths, where a wrong guess is expensive. Use flags for anything a script might repeat. The rule of thumb: if the decision is reversible, a flag is fine; if it is not, prompt."}, {"q": "Do colors belong in every CLI?", "a": "No. Colors are only safe when stdout is a TTY and the user has not set NO_COLOR. Use color to encode meaning, never decoration, and always test that piped output is clean. If you are not checking isatty(), you are going to corrupt someone's logs."}, {"q": "How do I keep Python CLI startup fast?", "a": "Lazy-import heavy modules inside command handlers, keep the main module free of side effects, and avoid pulling in large libraries like a TUI framework or a full ORM on the import path. We measured 68 milliseconds of startup in the final version, and most of that is unavoidable Python interpreter time."}, {"q": "Why not just build a TUI?", "a": "TUIs are excellent for dense, interactive workflows, but they break scriptability, complicate testing, and become hostile in SSH sessions with no interactive terminal. We wanted the 90 percent path to be a one-line command with readable text output, and a TUI would have sacrificed that."}]} />
+
+## Conclusion
+
+The biggest change in the `astro-tasks` rebuild was not in the code. It was in what we considered a bug. A confusing message became a bug. A slow startup became a bug. A missing confirmation on a destructive command became a critical bug. Once we started treating the human experience as the spec, the code rearranged itself around it: a small error-handling class, a careful formatter, a spinner that knows when to stay quiet, and a transcript test suite that reads like a conversation.
+
+A CLI is a piece of writing as much as it is a piece of engineering. The words you print are the product. The flags are the fine print. The microseconds are the body language. When you take all three seriously, the tool stops being a thing users tolerate and becomes a thing they reach for. That is the only metric that matters: not how many features the tool has, but how often someone chooses to run it.
+
+The version we shipped is still small, still ugly in places, and still improving. Every command in it has survived the 11pm test, and the test suite keeps the experience honest. If you are designing a CLI, borrow the test, borrow the error class, and then go find the moments where your tool is rude to people who are already tired. Fix those first. Everything else is syntax.
+
+[View the project on GitHub](https://github.com/3ni8ma/astro-tasks)

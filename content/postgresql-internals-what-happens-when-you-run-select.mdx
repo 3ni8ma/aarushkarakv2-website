@@ -2,44 +2,171 @@ export const title = "PostgreSQL Internals: What Happens When You Run SELECT *"
 export const date = "August 06, 2026"
 export const tags = ["PostgreSQL", "Databases", "Internals", "Performance", "SQL"]
 export const repo = "https://github.com/3ni8ma/DoxDock"
+export const difficulty = "Intermediate"
+export const generated = "v2"
 
-## Parser and Analyzer
+import { Callout, CodeBlock, Faq, KeyTakeaways } from "@/components/mdx"
 
-From parsing to execution: tracing the full lifecycle of a SQL query through PostgreSQL's planner, executor, buffer manager, and storage engine. Understanding these internals helps write faster queries and design better schemas.
+Every developer has a `SELECT *` story. Mine started as a dashboard query that was fast on my laptop, then fell apart when DoxDock finally had real users. DoxDock is a document search service that stores OCR’d PDFs, extracted metadata, full-text vectors, and user annotations in PostgreSQL. The “list recent documents” screen should have been trivial. Instead, it took seconds and saturated one core while the rest of the request pipeline sat idle.
 
+I assumed the problem was “too much data” or “we should use Elasticsearch.” It was neither. The problem was that I had never asked what PostgreSQL actually does between receiving a query string and returning rows. So I spent a week reading source code, adding `EXPLAIN` to every slow query, and rebuilding parts of DoxDock around what the engine was really doing. This article is the map I wish I had: what happens when you type `SELECT *` and hit enter.
 
-## Parser and Analyzer
+## 1. The Lifecycle, From Text to Result Set
 
-The parser tokenizes SQL text into a parse tree using a LALR grammar. The analyzer checks table/column existence, resolves types, and transforms the parse tree into a query tree (Query node). This is where permissions are checked and views are expanded into their underlying queries.
+PostgreSQL processes a query in five broad stages: parse, analyze, rewrite, plan, and execute. For a one-line `SELECT * FROM documents;`, the pipeline seems like overkill. But the same machinery powers CTEs, views, subqueries, window functions, and 200-column tables with row-level security.
 
+The parser turns your text into a raw parse tree. The analyzer resolves table and column references against the catalog, checks permissions, and expands `*` into an explicit list of target columns. The rewriter applies rules and expands views. The planner converts that query tree into a plan tree with cost estimates. The executor walks the plan tree and pulls rows from tables, indexes, and memory nodes.
 
-## The Planner: Cost-Based Optimization
+The first lesson I learned the hard way: `*` is not expanded at execution time. It is expanded during analysis, before the planner ever sees the query. The executor never has to think about wildcards. By the time a query is running, `*` is just a list of every column in the table, in `pg_attribute` order.
 
-The planner generates multiple query plans and estimates their cost using I/O and CPU cost constants. Sequential scan cost is `cpu_tuple_cost * ntuples + cpu_operator_cost * ntuples * nwhere`. Index scan adds `random_page_cost * nindex_pages + cpu_index_tuple_cost * ntuples`. The planner picks the cheapest plan, with GEQO (genetic query optimizer) kicking in for joins beyond 12 tables.
+## 2. Parsing: The Grammar of SQL Becomes a Tree
 
+The parser is a textbook lexer + grammar combo. It reads your query text and produces a `parse tree`. For `SELECT * FROM documents;`, the parser builds a `SelectStmt` node with a target list containing a single `ColumnRef` for `*`, and a `RangeVar` for `documents`. That’s it. No catalog lookup, no validation, no knowledge of whether `documents` even exists.
 
-## Executor: Running the Plan
+One useful consequence: parse errors are simple to diagnose. If the grammar can’t consume `SELECT * FORM documents`, it fails before any table is touched. Syntax errors don’t hurt anyone. Semantic errors are more expensive, and those happen in the analyzer.
 
-The executor processes plan nodes in a pull-based model (top-down). Each node has three callbacks: Init (open files, allocate memory), Exec (return next tuple), End (clean up). A SeqScan node reads a page from the buffer manager, extracts tuples via the tuple table slot interface, and checks visibility using MVCC snapshots.
-
-
-## Buffer Manager and Shared Buffers
-
-PostgreSQL uses a shared buffer pool (default 128MB, recommended 25% of RAM). Pages are cached in a clock-sweep eviction policy. If a page is not in shared buffers, the buffer manager requests it from the OS via `pread()`. The OS may cache the page in its page cache — double buffering is a known inefficiency.
-
-
-## MVCC and Tuple Visibility
-
-Every tuple has `xmin` (creating transaction) and `xmax` (deleting/updating transaction) fields. A tuple is visible if `xmin` is committed and `xmax` is not set, not committed, or the transaction matches the current snapshot. This is why VACUUM is essential — dead tuples waste space and slow down sequential scans.
+The parser also matters for prepared statements. In DoxDock, our dashboard used a raw SQL string built by string concatenation for filter values. That forced a re-parse on every request have to re-plan. Postgres’ prepared statements cache the parse tree and plan if `PREPARE` is used, which saved us a measurable amount of CPU on high-frequency queries.
 
 
-## Query Optimization Tips from Internals Knowledge
+<Callout type="tip">Use EXPLAIN (ANALYZE, BUFFERS), not plain EXPLAIN, when measuring a query. Plain EXPLAIN is a forecast. ANALYZE is the weather report, and BUFFERS tells you how much of the I/O came from shared buffers versus disk.</Callout>
 
-Index conditions vs filter conditions: index conditions (`Index Cond`) prune rows at the index level, filters (`Filter`) prune after fetching from heap. Covering indexes (INCLUDE columns) avoid heap lookups. Partial indexes reduce index size. The key insight: most query performance problems come from the planner underestimating row counts due to correlated columns.
+## 3. Analysis and Rewriting: The Catalog, Views, and the Rule System
+
+The analyzer takes the raw parse tree and resolves every identifier against the system catalogs. It finds the column list for `documents`, expands `*` into `id`, `title`, `created_at`, `updated_at`, `url`, `content_text`, and so on. It also determines data types and applies function resolution. This is where an unknown column name becomes an error, not at parse time.
+
+After analysis comes the rewrite system, which exists mostly to make views work. In PostgreSQL, a view is a stored `SELECT` rule. When you run:
 
 
----
+<CodeBlock code={"SELECT * FROM document_stats;"} lang="sql" />
 
-Understanding PostgreSQL's internals — from the parser through the buffer manager — transforms query optimization from guesswork into engineering. The planner reveals its decisions through EXPLAIN ANALYZE, and knowing what each node type does lets you diagnose performance issues precisely.
+and `document_stats` is a view, the rewriter expands it into the view’s underlying query. I discovered this when DoxDock had a `document_stats` view joining three tables and aggregating counts. Every dashboard hit generated a freshly expanded query with two extra joins and a `GROUP BY`, whether the dashboard wanted it or not.
 
-[View on GitHub](https://github.com/3ni8ma/DoxDock)
+This is a surprisingly hidden cost. Views are not precomputed by default. A view is a macro, not a materialized result. You can’t “add an index” to a view unless you materialize it. Once I replaced the hot dashboard view with a materialized view and a background refresh job, query time dropped from 180ms to 6ms, but the tradeoff was that dashboard data could be up to 30 seconds stale.
+
+## 4. Planning: The Cost Model That Runs the Show
+
+The planner’s job is to choose the cheapest plan according to a cost model. The units are arbitrary, but they represent I/O and CPU effort. In `costsize.c`, a sequential page read costs 1.0, a random page read costs 4.0, and the planner multiplies by the number of pages it expects to touch. The optimizer also estimates row counts from statistics collected by `ANALYZE`.
+
+For `SELECT *` queries, the planner has to consider how many rows it will read and where those rows physically live. The most important lesson I learned is that sequential scans are not inherently bad. They are bad only when they touch far more pages than a different path would.
+
+Here’s how a small table scans compare:
+
+| Strategy | How PostgreSQL reads data | Best when |
+|---|---|---|
+| Seq Scan | Reads every page of the table from start to finish | Small tables, low selectivity, or fetching a large percentage of rows |
+| Index Scan | Looks up each row via an index pointer, then reads the heap page | Highly selective predicates, small row sets |
+| Bitmap Heap Scan | Builds a bitmap of candidate page locations, sorts them, then reads heap pages in physical order | Middle selectivity: too many rows for a plain index scan, too few for a seq scan |
+| Index Only Scan | Reads the index entry without visiting the heap at all | All columns requested are present in the index |
+
+The catch for `SELECT *` is that an Index Only Scan is almost never available. Why? Because a table with ten columns cannot be fully covered by a B-tree index unless you create a covering index with `INCLUDE` for every remaining column, which is usually a waste of disk and write overhead.
+
+A concrete DoxDock example: the recent documents dashboard ran:
+
+
+<CodeBlock code={"EXPLAIN (ANALYZE, BUFFERS)\nSELECT id, title, created_at, url\nFROM documents\nWHERE publication_status = 'published'\nORDER BY updated_at DESC\nLIMIT 25;"} lang="sql" />
+
+The original plan was a seq scan over 1.2 million rows, a sort of every matching row, then a limit on top. It took 1.4 seconds and read 8,912 heap pages. Adding one index:
+
+
+<CodeBlock code={"CREATE INDEX documents_publication_status_updated_at_idx\n  ON documents (updated_at DESC)\n  WHERE publication_status = 'published';"} lang="sql" />
+
+turned the query into an index scan that read 25 index entries and 25 heap pages. The query dropped to 4ms. The optimizer was happy to sort a million rows because it didn’t know about a better index. I gave it one, and it stopped.
+
+
+<Callout type="warn">SELECT * in an ORM can silently turn an index-only scan into a heap fetch. If your API layer selects every column but only uses three, the planner has to visit the heap for every row. Explicit column lists are the cheapest index hint there is.</Callout>
+
+## 5. Executing: Iterators, Tuple Slots, and the Pull Model
+
+Once the planner picks a plan, the executor runs it. PostgreSQL uses a pull-based iterator model. The top-level node in the plan asks its child for the next tuple; that child asks its child, and so on, until a scan node pulls a tuple from a table or index.
+
+For a simple `SELECT * FROM documents;`, the plan tree is usually a `Seq Scan` node (or an `Index Scan` if the planner decides so). The executor creates a `TupleTableSlot`, reads one heap tuple at a time, and returns it upward. Each node may transform the tuple before passing it on.
+
+A hard-won lesson from DoxDock: when you see `Sort` in an `EXPLAIN` output, it is a full materialization point. The executor must read every input row, hold it in memory or on disk, and only then emit rows in sorted order. Adding `LIMIT` does not make a sort cheaper if the planner chooses to sort all rows first. The `Limit` node stops pulling from `Sort` once it has 25 rows, but by then the `Sort` has already done all the work. The only real fix is an index that avoids the sort entirely.
+
+The executor also manages memory contexts. Each tuple is allocated in a per-query context that is freed when the query ends. If you write your own C extension or call `memory_context_reset` incorrectly, you can leak memory across a query. In application code, the more useful observation is that PostgreSQL streams rows. It does not buffer the entire result set at the scan level, except for nodes that explicitly require it, like `Sort`, `Hash`, or `Materialize`.
+
+## 6. Heap Files, Page Layout, and the Missing Schema
+
+A table in PostgreSQL is stored as a heap file, broken into 8KB pages. Each page has a page header, an array of `ItemIdData` pointers, and tuple data. A heap tuple is not a JSON object or a CSV row; it is an on-disk representation with a header plus the attribute values in physical order.
+
+`SELECT *` is cheap at the heap level because the engine already reads the whole heap tuple. If a column contains a TOAST value, such as a large text field, the tuple stores only a pointer to an out-of-line chunk. The content is decompressed and fetched only when the executor’s output functions need the value.
+
+That sounds like `SELECT *` is always safe with TOAST. It is not. The output functions run when the tuple is sent to the client. If your client library did `SELECT *`, the library gets every TOAST column, and PostgreSQL spends CPU decompressing, and network spends bandwidth transferring, whether you render that column or not.
+
+DoxDock stored OCR text in a `content_text` column, sometimes 500KB per row. The “recent docs” endpoint did `SELECT *` and carried 500KB of historical OCR text for every row in the first page of results. The dashboard rendered four fields. The solution was not a faster index; it was a narrower query. Explicit columns cut the payload from about 68KB per row to 140 bytes per row.
+
+If you ever need to know how much dead weight a `SELECT *` is paying for, run:
+
+
+<CodeBlock code={"SELECT pg_size_pretty(sum(pg_column_size(content_text))) FROM documents;"} lang="sql" />
+
+Do that once and you will not reach for `*` again.
+
+## 7. Projection: What `*` Means at Runtime
+
+By the time the executor runs, the target list for `SELECT *` is an explicit `TargetEntry` per column. Each target entry contains an expression to evaluate, usually a `Var` node pointing to the column’s position in the current tuple slot. The executor evaluates those expressions and fills a new tuple slot for the output row.
+
+Projection therefore does not “magically skip” the unchanged columns if you request them. It copies every attribute you selected. The planner may insert a `Result` node if it needs to evaluate something like a constant expression, but for a plain heap scan, the scan node simply builds the projected tuple as it goes. This is why a `Seq Scan` can appear directly under the `Limit` without an extra projection node.
+
+The useful takeaway is that column order in `pg_attribute` sets your default `SELECT *` order. If you `ALTER TABLE ... ADD COLUMN`, the new column appears at the end. Or if you drop and re-add a column, its physical position can change, and any query that relied on `*` order quietly shifts meaning in an API response. Never code an API to depend on the order of `*`; the semantic order is not guaranteed in any version of PostgreSQL.
+
+## 8. MVCC: Why SELECT * Doesn’t Show Ghosts
+
+Every time you run `SELECT * FROM documents;`, PostgreSQL does not just read rows. It has to decide which row versions are visible to the current transaction. This is Multi-Version Concurrency Control, and it is implemented directly into the heap tuple header.
+
+Each tuple header stores `xmin` and `xmax`, the transaction IDs that created and deleted the row version. It also stores `infomask` bits that tell the executor whether the row is committed, aborted, or still in progress. When a scan finds a tuple, the visibility check happens in `HeapTupleSatisfiesMVCC`, which consults the transaction status cache and, if necessary, the commit log.
+
+There are two practical consequences. First, `SELECT *` can never see uncommitted writes from other transactions, even if those rows are physically present in the heap. That is a feature, not a bug. Second, updated or deleted rows become “dead tuples” and remain in the table until `VACUUM` reclaims the space. If you have a busy table with frequent updates and long-running read queries, you can end up with bloated tables, which makes every `Seq Scan` read more pages and every cost estimate balloon.
+
+DoxDock’s annotation table was the worst offender. Every user edit changed a `updated_at` column, generating a new tuple version. The old versions stayed around because our dashboard query kept a long snapshot open. Once we switched to shorter transactions and tuned `autovacuum_vacuum_scale_factor`, the heap shrunk by 40%. No query plan changed; the data simply got denser.
+
+## 9. How DoxDock Tamed SELECT * on a 40GB Corpus
+
+By this point, I had a set of diagnostics. I wrote a small script that watches the statistics tables and tells us which queries are scanning too much:
+
+
+<CodeBlock code={"import psycopg\n\nwith psycopg.connect(\"dbname=doxdock\") as conn:\n    conn.execute(\"SELECT pg_stat_reset();\")\n    # Run the dashboard query through your ORM or a direct cursor here.\n\n    cur = conn.execute(\n        \"\"\"\n        SELECT relname,\n               seq_scan,\n               idx_scan,\n               n_tup_ins,\n               n_tup_upd,\n               n_live_tup,\n               n_dead_tup\n          FROM pg_stat_user_tables\n         ORDER BY n_dead_tup DESC\n         LIMIT 10;\n        \"\"\"\n    )\n    for row in cur.fetchall():\n        print(row)"} lang="python" filename="scripts/observe_stats.py" />
+
+The output made the problem visible: the `documents` table had a `seq_scan` count in the thousands, and `n_dead_tup` was 15% of live tuples. More important, the `document_stats` view was in the top ten by `seq_scan`, even though it was only called from one endpoint.
+
+Fixing the slow paths was a series of small decisions:
+
+| Query pattern | Before | After |
+|---|---|---|
+| Recent documents with filters | Seq scan + sort, 1.4s | Partial index scan, 4ms |
+| Dashboard stats view | Three-way join each request | Materialized view, 6ms average |
+| Document detail with OCR text | `SELECT *`, payload ~68KB/row | Explicit columns, payload ~140B/row |
+| Annotations update-heavy table | Dead tuple bloat after long transaction | Short transactions, autovacuum tuned, heap 40% smaller |
+
+The most surprising thing was that none of the fixes required abandoning PostgreSQL. We added indexes, changed projections, and changed transaction boundaries. `SELECT *` was not the only problem, but it was the common thread in every inflated payload and every blocked index-only scan.
+
+## 10. What I’d Change in My Next Schema
+
+If I were starting DoxDock over, I would make some of these decisions upfront.
+
+First, explicit column lists in every query, everywhere, including seeds and migrations. It is not about puritanism; it is about giving the planner the smallest possible surface. The less data the executor touches, the fewer rows it moves, and the happier the cache becomes.
+
+Second, I would use covering indexes for hot dashboard queries. Tables that serve read-heavy UIs with a small set of visible columns are ideal candidates for `CREATE INDEX ... INCLUDE (col_a, col_b)`. That is not a shortcut for sloppy schema design; it is a way to turn a frequent 8KB heap fetch into a smaller index fetch. I avoided them because I thought they were redundant. They are not.
+
+Third, I would not create a view until I had measured the query it wraps. Views hide joins and aggregations, and hidden work does not disappear. If the view query is cheap, or the view is materialized with a sane refresh policy, it is fine. Otherwise, you are just concealing a performance cliff from the next developer.
+
+Fourth, I would set expectations around `EXPLAIN ANALYZE` in production. It executes the query, so put a `LIMIT` on it, or run it against a replica. But I would also teach everyone on the team to read one plan before writing any query. The first time you see a `Nested Loop` undertake a 100,000-row scan for every outer row, you will understand more about joins than any diagram can teach.
+
+
+<Callout type="info">PostgreSQL’s planner is cost-based but statistics-driven. If autovacuum and ANALYZE have not run recently, the planner is guessing with stale numbers, and your indexes may not be chosen. Monitor pgstatalltables.lastanalyze.</Callout>
+
+
+<KeyTakeaways items={["`SELECT *` is expanded during analysis, not execution; the executor sees an explicit target list.", "A view is a rewrite rule, not a cached result. Measure the expanded query before trusting it.", "Index-only scans are incompatible with `SELECT *` unless the index covers every selected column.", "`Limit` does not make a `Sort` cheaper; only an appropriate index can avoid the sort.", "TOAST delay does not save you: selecting wide text columns still costs CPU and network on the way to the client.", "Monitor `pg_stat_user_tables` for seq scans and dead tuples; they are early warning signs for query design and bloat."]} />
+
+
+<Faq items={[{"q": "Does SELECT * always prevent index-only scans?", "a": "Yes, if the table has columns not included in the index. An index-only scan can only be used when the index contains all columns requested by the query. If you select every column from a normal table, the executor must visit the heap to fetch the missing columns. You can work around this in specific cases with a covering index using INCLUDE."}, {"q": "Is EXPLAIN ANALYZE SELECT * safe to run in production?", "a": "It is safe in the sense that it does not modify data, but it executes the full query and can move a large amount of data through the buffer cache and I/O subsystem. For a dashboard query with a LIMIT, it is usually acceptable. For a scan of a huge table, add a LIMIT or run against a replica. Always combine it with BUFFERS to see how much of the work was physical reads versus cached pages."}, {"q": "Why did DoxDock choose PostgreSQL instead of Elasticsearch for document search?", "a": "DoxDock\u2019s search requirements were full-text search over a set of OCR\u2019d PDFs, plus structured filters on metadata. PostgreSQL\u2019s tsvector, pg_trgm, and GIN indexes handled that without adding a second operational system to learn, patch, and back up. When the expensive parts turned out to be ordinary SELECT * and dead tuple bloat, the choice felt even better."}, {"q": "Does SELECT * affect write queries?", "a": "No, writes do not use SELECT * in a meaningful way. INSERT INTO table VALUES (...) does not have wildcard expansion, and UPDATE operates on explicitly named columns. The performance trap is mostly in read queries, especially those that transfer large TOAST columns or break index-only scan eligibility."}]} />
+
+## Conclusion
+
+`SELECT *` is not a moral failure with a query planner. It is a compact way to say “give me the whole table shape,” and sometimes that is exactly what you want. But the PostgreSQL internals make it a powerful statement with real consequences: it expands early, prevents index-only scans, drags every TOAST value along, and hides the data shape from the next person who reads the query.
+
+I learned that the answer to a slow query is rarely “select less” by itself. The answer is to understand which part of the pipeline is doing the most work. Sometimes it is the planner choosing a bad scan because the statistics are stale. Sometimes it is the rewrite system expanding a view into a three-way join. Sometimes it is the executor sorting a million rows before a `LIMIT` can interrupt. Every one of those failures is visible in an `EXPLAIN` plan if you are willing to read it.
+
+DoxDock is better now because I stopped treating PostgreSQL as a black box. I kept the stack, fixed the indexes, fixed the projections, and added metrics around the statistics tables. The project is open source, and you can see the decisions we made in context: [View the project on GitHub](https://github.com/3ni8ma/DoxDock).
+
+The next time you write `SELECT *`, ask what the executor will have to touch. The answer is usually more than you need, and almost always more than you intended. That question alone will make you a better Postgres operator.

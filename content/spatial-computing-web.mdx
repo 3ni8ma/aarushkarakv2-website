@@ -2,79 +2,150 @@ export const title = "Spatial Computing on the Web: MediaPipe + Three.js"
 export const date = "July 28, 2026"
 export const tags = ["Spatial Computing", "Three.js", "MediaPipe", "WebXR", "Computer Vision"]
 export const repo = "https://github.com/3ni8ma/HELIOS"
+export const difficulty = "Intermediate"
+export const generated = "v2"
 
-## Overview
+import { Callout, CodeBlock, Faq, KeyTakeaways, Quiz } from "@/components/mdx"
 
-HELIOS is a gesture-controlled browser-based operating system interface — no hardware wearables, no dedicated depth cameras. Just a standard webcam and the browser's JavaScript engines running hand tracking and 3D rendering in real time. This post covers the technical architecture, challenges faced, and what it taught me about the current state of browser-based computer vision.
+The first time a Three.js cube followed my index finger across a laptop screen — no controller, no touchscreen, no click — I felt the same small shock I remember from the first time a GPS arrow moved as I walked. Then the cube drifted left and vanished, because my hand had crossed the edge of the camera's field of view. That is the entire story of spatial computing on the web in miniature: a moment of magic, followed immediately by an edge case.
 
-## System Architecture
+HELIOS is the project that grew out of that edge case. It's an open-source web app that lets you create, grab, and throw 3D objects with your bare hands in a browser tab. The stack is deliberately ordinary: MediaPipe Hands for tracking, Three.js for rendering, and a few hundred lines of glue code between them. The hard part was never the 3D. The hard part was making the browser answer one question every frame: where is the user's hand, and what is it doing?
 
-```
-Webcam Frame → MediaPipe Hands → Landmark Coordinates → Gesture Classifier → Action Dispatcher → Three.js Scene
-```
+"WebXR" sounds like the obvious tool for this. It is not. WebXR is an output protocol — it defines how the browser draws to a headset or an AR viewport — and its input story is controllers or headset-mounted sensors. It does not help you reason about a raw camera image on the same page you're drawing to. So HELIOS took the other route: read the camera with `getUserMedia`, infer the hands with a WASM model, and let Three.js handle the rest. This article is about what that route actually costs.
 
-The pipeline runs entirely client-side. At 30 FPS, MediaPipe's hand tracking model identifies 21 hand landmarks per detected hand. These 3D coordinates are fed into a lightweight gesture classifier that maps spatial configurations to OS-like actions: window focus, swipe navigation, pinch-to-zoom, and air-tap selection.
+## The Minimum Definition of Spatial Computing
 
-## The MediaPipe Integration
+I keep a one-line definition pinned in the repo README: *spatial computing is software that reads continuous physical input — position, pose, proximity — and updates its state without requiring a discrete input event.* A mouse produces clicks; a touchscreen produces touches; a webcam produces a stream of noisy pixels. The browser platform gives you the output side of spatial computing for free via WebGL, but it gives you almost nothing on the input side. A camera stream is not an input device. It becomes one only after you spend real engineering effort interpreting it.
 
-MediaPipe's JavaScript SDK ships as a WASM bundle with a WebGL backend for GPU acceleration. The key insight was **not** to use the GPU delegate for hand tracking — it creates a secondary WebGL context that conflicts with Three.js's rendering context, causing a crash-restart loop where `THREE.WebGLRenderer` fires `contextlost` events repeatedly.
+MediaPipe Hands is the interpreter. It takes a single video frame and returns up to two hand meshes, each with 21 landmarks, with `x` and `y` normalized to the image dimensions and a `z` that describes depth relative to the wrist. That sounds clean. In practice, `z` is the hardest thing in this entire project to trust, and I'll come back to it.
 
-The fix: force the CPU delegate for MediaPipe hand tracking, keeping Three.js as the sole WebGL consumer. The performance tradeoff (CPU-based inference adds ~15ms per frame) was acceptable at 30 FPS target.
+The first architectural decision was refusing to treat MediaPipe's results as ground truth. The model is probabilistic, the coordinates drift between frames, and the entire pipeline runs on a WASM thread at a cadence that has nothing to do with your display refresh rate. So HELIOS treats the hand tracker like a flaky remote sensor and builds two independent loops around it.
 
-```typescript
-const hands = new Hands({
-  locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`,
-});
-hands.setOptions({
-  maxNumHands: 2,
-  modelComplexity: 1,
-  minDetectionConfidence: 0.7,
-  minTrackingConfidence: 0.6,
-});
-```
+## Pipeline Architecture: Two Loops, One Camera
 
-## Gesture Classification Approach
+The first version of HELIOS was naive: call `hands.send({ image: video })`, wait for the promise to resolve, then shove the landmarks straight into the Three.js scene. That produced a render loop that stuttered between 20 and 55 FPS depending on how long the WASM inference took. The fix was to decouple capture from rendering.
 
-Rather than training a deep learning classifier (which would require labeled gesture datasets and model hosting), I implemented a rule-based classifier operating on normalized landmark distances:
+### The two loops
 
-- **Pinch**: thumb tip to index tip distance under 0.05x the hand bounding box diagonal
-- **Fist**: average distance from fingertips to palm center below a threshold
-- **Swipe**: velocity of wrist landmark exceeding a threshold in a single axis
-- **Point**: index finger extended, all other fingers curled
+The detection loop runs on `requestVideoFrameCallback` and owns the MediaPipe model. The render loop runs on `requestAnimationFrame` and owns Three.js. The only thing they share is a single mutable `HandFrame` object, written by the tracker and read by the renderer. If inference takes 40 ms on a phone, the render loop keeps drawing at 60 FPS using the last known hand pose. The hand visually lags, but it never freezes.
 
-This rule-based approach handles the core gesture vocabulary with ~90% accuracy in good lighting — no ML training pipeline required.
 
-## Three.js Rendering
+<CodeBlock code={"import { Hands } from \"@mediapipe/hands\";\n\nexport interface HandFrame {\n  timestamp: number;\n  landmarks: number[][]; // 21 landmarks, each [x, y, z] normalized\n  handedness: string;\n}\n\nexport function createTracker(\n  video: HTMLVideoElement,\n  onFrame: (frame: HandFrame) => void\n) {\n  const hands = new Hands({\n    locateFile: (file) =>\n      `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`,\n  });\n\n  hands.setOptions({\n    maxNumHands: 2,\n    modelComplexity: 1,\n    minDetectionConfidence: 0.6,\n    minTrackingConfidence: 0.6,\n    selfieMode: true, // mirrors the image to match the preview\n  });\n\n  hands.onResults((result) => {\n    onFrame({\n      timestamp: performance.now(),\n      landmarks: result.multiHandLandmarks.map((hand) =>\n        hand.map((lm) => [lm.x, lm.y, lm.z])\n      ),\n      handedness: result.multiHandedness[0]?.label ?? \"Unknown\",\n    });\n  });\n\n  let stopped = false;\n\n  async function loop() {\n    if (stopped) return;\n    await hands.send({ image: video });\n    if (\"requestVideoFrameCallback\" in video) {\n      video.requestVideoFrameCallback(loop);\n    }\n  }\n\n  function start() {\n    if (\"requestVideoFrameCallback\" in video) {\n      video.requestVideoFrameCallback(loop);\n    } else {\n      // Safari on older iOS falls back to polling at ~30 fps.\n      video.addEventListener(\"timeupdate\", loop);\n    }\n  }\n\n  return { start, stop: () => { stopped = true; } };\n}"} lang="typescript" filename="src/pipeline.ts" />
 
-The 3D interface renders a spatial desktop with floating panels, icon grids, and a dock. Each interaction surface is a `PlaneGeometry` with `MeshPhysicalMaterial` for glass-like reflections. Window management (open, close, resize, drag) maps directly to Three.js object transformations:
 
-```typescript
-function handleDrag(landmark: NormalizedLandmark, target: Mesh) {
-  const x = (landmark.x - 0.5) * viewport.width;
-  const y = (0.5 - landmark.y) * viewport.height;
-  target.position.set(x, y, target.position.z);
-}
-```
+<Callout type="tip">Warm the model up before showing any UI. Call hands.send() with a blank canvas once after the camera starts, otherwise the first ten frames of real hand input get swallowed by model initialization jank.</Callout>
 
-## Hardest Problems Solved
+The render loop reads the shared frame and interpolates. I use a simple frame-to-frame lerp on each landmark with a factor of 0.4; at 30 fps tracking and 60 fps rendering that smooths out the worse jitter without adding noticeable latency. Nobody notices a 16 ms interpolation delay. Everybody notices a hand that vibrates.
 
-### Context Conflict (WebGL)
-As mentioned above: Three.js and MediaPipe both want exclusive WebGL context access. The CPU delegate workaround cost ~3 hours of debugging — the crash logs pointed to a generic `CONTEXT_LOST_WEBGL` error with no indication that MediaPipe was the cause.
+## From Normalized Pixels to 3D Rays
 
-### Latency Budget
-The entire frame budget at 30 FPS is 33ms. MediaPipe inference takes 15-20ms on CPU, gesture classification adds ~2ms, and Three.js rendering takes 5-8ms. This leaves a razor-thin 5-10ms margin for garbage collection and browser overhead. Optimizations included pre-allocating landmark arrays and using `BufferGeometry` with static attributes.
+Now the real conversion problem. MediaPipe gives you `x` and `y` normalized to the video frame, top-left origin. Three.js wants world coordinates, with an origin somewhere in the middle of a scene. The bridge is a `PerspectiveCamera` configured to roughly match the webcam's vertical field of view, then an unprojection through a raycaster.
 
-### Calibration-Free Operation
-Initial prototypes required a T-pose calibration step. Removing it meant normalizing all landmark coordinates against the wrist-to-middle-finger distance — making gestures scale-invariant regardless of hand size or camera distance.
+This is the most important trick in the whole project, and it's only about fifteen lines:
 
-## What I'd Do Differently
 
-1. **Web Workers for MediaPipe.** Offloading MediaPipe inference to a Web Worker would prevent the main thread from blocking on frame processing, recovering ~10ms for smoother rendering.
-2. **Gesture smoothing with Kalman filters.** Raw landmark data has frame-to-frame jitter. A simple exponential moving average helps, but a proper 1D Kalman filter on each landmark axis would produce significantly smoother gesture trajectories.
-3. **Progressive enhancement for WebXR.** The current implementation works on any browser with WebGL + webcam access. Adding an optional WebXR layer for AR devices would open up passthrough AR mode.
+<CodeBlock code={"import * as THREE from \"three\";\n\nconst ASSUMED_DISTANCE = 0.6; // meters from camera to user\nconst Z_SCALE = 0.25;         // MediaPipe z is unitless; this rescales it\n\nexport function landmarkToWorld(\n  lm: { x: number; y: number; z: number },\n  camera: THREE.PerspectiveCamera,\n  target: THREE.Vector3\n): THREE.Vector3 {\n  // Normalized [0..1] -> NDC [-1..1], with y flipped for WebGL.\n  const ndc = new THREE.Vector2(lm.x * 2 - 1, -(lm.y * 2 - 1));\n\n  const raycaster = new THREE.Raycaster();\n  raycaster.setFromCamera(ndc, camera);\n\n  // z is not metric depth: it is a relative offset scaled by wrist size.\n  const depth = ASSUMED_DISTANCE - lm.z * Z_SCALE;\n\n  return raycaster.ray.at(depth, target);\n}"} lang="typescript" filename="src/spatial.ts" />
 
-## Results
+The webcam's real FOV is unknown and varies between devices, so I start with a 60-degree vertical FOV and calibrate in the settings screen. The `ASSUMED_DISTANCE` constant exists because a ray has no length; I have to pin the hand to *some* depth before it becomes a point. In practice, the exact value matters less than you'd think: if the depth is wrong, the cursor is wrong uniformly across the whole screen, and a single "move your hand here" calibration step fixes it.
 
-HELIOS was demonstrated as a functional proof-of-concept showing window management and basic app launching via hand gestures — entirely in the browser. The project has been featured in the Hack Club Slack and received contributions from three community members working on accessibility improvements.
+What actually matters is that `z` is semantically unreliable, which leads directly into the next section.
 
-[View on GitHub](https://github.com/3ni8ma/HELIOS)
+## The Gesture Vocabulary
+
+After two weeks of prototypes, only three gestures survived: **pinch**, **poke**, and **open**. I built and then deleted rotation, two-hand zoom, and a fist gesture; all of them were too unstable across different hand sizes and lighting conditions to ship. Pinch became the "grab" action, poke the "select" action, and open the universal way to release.
+
+The thresholds live in normalized units, not pixels, because the video can change resolution at any moment:
+
+
+<CodeBlock code={"const PINCH_DISTANCE = 0.055;  // normalized \u2248 2 cm at arm's length\nconst POKE_Z_OFFSET = 0.045;   // index tip relative depth vs. middle tip\nconst HOLD_FRAMES = 3;         // 50\u2013100 ms debounce\n\nexport type GestureName = \"pinch\" | \"poke\" | \"open\";\n\nexport function classifyGesture(hand: number[][]): {\n  name: GestureName;\n  strength: number;\n} {\n  const thumb = hand[4];\n  const index = hand[8];\n  const middle = hand[12];\n\n  const pinchDist = Math.hypot(thumb[0] - index[0], thumb[1] - index[1]);\n\n  if (pinchDist < PINCH_DISTANCE) {\n    return {\n      name: \"pinch\",\n      strength: Math.min(1, 1 - pinchDist / PINCH_DISTANCE),\n    };\n  }\n\n  const pokeDepth = index[2] - middle[2];\n  if (pokeDepth > POKE_Z_OFFSET) {\n    return { name: \"poke\", strength: Math.min(1, pokeDepth / 0.1) };\n  }\n\n  return { name: \"open\", strength: 0 };\n}"} lang="typescript" filename="src/gestures.ts" />
+
+Each gesture state also carries a `strength` value so the renderer can scale feedback — objects shrink slightly as the pinch tightens, which makes the interaction feel physical. A three-frame hold requirement prevents the classic problem where a hand that is just a little ambiguous triggers "grab" for a single frame and drops an object.
+
+The threshold table is honest about how fragile some gestures are:
+
+| Gesture | Raw trigger | Debounce | Failure mode |
+|---|---|---|---|
+| Pinch | 0.055 normalized distance | 3 frames | Thumb and index occlude each other at glancing angles |
+| Poke | 0.045 z-offset | 3 frames | Depth estimate unstable when hand is far from camera |
+| Open | fallback | none | Fires during pinch release; that is by design |
+
+## Performance: What 60 FPS Actually Costs
+
+I benchmarked the inference loop on three devices during development. These numbers are for `modelComplexity: 1` and `maxNumHands: 2`, which is the realistic production configuration:
+
+| Device | Median inference | Frame-to-landmark latency | Verdict |
+|---|---|---|---|
+| M1 MacBook Pro (Chrome) | 14 ms | ~40 ms visible | Comfortable |
+| Pixel 7 (Chrome) | 34 ms | ~75 ms visible | Playable, slightly floaty |
+| iPhone 12 (Safari) | 25 ms | ~60 ms visible | Playable, battery drain noticeable |
+
+The latency column matters more than inference time. Even with decoupled loops, the hand visually lags 40–75 ms behind the real hand. Three.js rendering stays at a rock-solid 60 FPS the whole time; spatial input does not demand a fast render loop, it demands a predictable one.
+
+The biggest rendering win was reducing draw calls, not optimizing the model. HELIOS renders a few dozen cubes at most; the difference between 30 and 300 draw calls on a phone is the difference between 60 FPS and 30 FPS. I also disabled shadows entirely. Shadows look great in demos and cost more than the entire hand tracking pipeline on mobile GPUs.
+
+
+<Callout type="warn">requestVideoFrameCallback stops firing when the tab is backgrounded — that's fine — but it also stops firing on some Android phones when battery saver is enabled. The timeupdate fallback in pipeline.ts is not a nice-to-have; it is what keeps the app alive on Pixel devices.</Callout>
+
+
+<Quiz question={"How does MediaPipe Hands encode the depth of a landmark?"} options={["As an absolute distance from the camera in meters on a linear scale", "As a unitless value relative to the wrist landmark's scale", "As the pixel distance between the hand and the bottom of the image"]} answer={1} explanation={"MediaPipe's z is an estimated relative depth offset normalized to the wrist-base scale, which is why you must rescale it before placing objects in Three.js world space."} />
+
+## Coordinate Spaces: A Tale of Three Origins
+
+The single most confusing debugging session in HELIOS took an entire evening and came down to a mirror flip. Three coordinate systems live inside this app simultaneously:
+
+1. **Image space**: MediaPipe's `x` and `y`, origin at top-left, `y` pointing down.
+2. **NDC space**: Three.js's unprojection input, origin at center, `y` pointing up.
+3. **World space**: the Three.js scene, where the user's hand plane sits at `z = -0.6`.
+
+The bug surfaced when I enabled `selfieMode: true` in MediaPipe. Selfie mode mirrors the image horizontally so the video preview matches what the user sees in a mirror. But it also mirrors the landmarks, which swaps the handedness labels, and then the gesture logic starts treating left as right. The fix was to stop caring about label stability entirely: HELIOS never relies on `handedness` for core interactions, because MediaPipe's left/right labels can swap mid-session when hands cross. It only uses them for cosmetic UI.
+
+The second thing that bit me was the z-axis direction. MediaPipe's `z` grows toward the camera; Three.js's negative z grows toward the camera from the origin. I shipped one build where pinch-grabbed objects flew *backward* into the screen because I subtracted where I should have added. The `depth` calculation in `spatial.ts` is the corrected version.
+
+## Why Not Just Use WebXR?
+
+This is the question every reviewer asked, and the honest answer is a table:
+
+| Capability | MediaPipe + Three.js | WebXR handheld AR | WebXR immersive VR |
+|---|---|---|---|
+| Bare-hand input | Yes, from the 2D camera | No (requires controller or native hand tracking) | Only inside a headset |
+| Device coverage | Any browser with a camera | Chrome on ARCore-compatible Android; iOS 17+ on Safari | Desktop headsets, Quest browsers |
+| Camera access | Full raw video stream | Opaque; you do not see frames | None |
+| Deployment | Plain web page | Requires HTTPS and a WebXR session flow | Requires a headset |
+| Integration with HTML UI | Direct, the same page | Separate AR viewport | Separate immersive session |
+
+WebXR handheld AR is genuinely interesting, but it forces the user into a separate AR viewport and gives you no access to the camera frames, which means you cannot overlay your own hand tracking on top of existing UI. HELIOS wanted to feel like a normal web app where the cursor is your hand. That requirement ruled out WebXR on day one.
+
+The practical argument is even simpler: almost everyone who visits a link on a laptop has a webcam, and every one of those people already knows how to click "Allow" on a camera prompt. Handheld WebXR needs an ARCore-compatible phone, a compatible browser, and a user who understands what "enter AR" means. In 2026, the camera-and-WASM route still reaches a bigger audience with less friction.
+
+## Testing on Real Devices: The Hardware Lottery
+
+The first real-device test ruined my confidence in the whole stack. On my MacBook, HELIOS tracked hands perfectly. On a Windows laptop with a cheap webcam, the render loop ran fine but the tracker silently failed for a specific user — no landmarks, no errors, nothing. That is the worst failure mode MediaPipe has: it fails quietly, and it fails more often on darker skin tones in dim room lighting.
+
+I don't have a perfect answer for this. I did two things that improved the situation measurably. First, I added a live detection meter to the UI that shows landmark confidence at all times, so a silent failure becomes a visible "tracking lost" state instead of a frozen cursor. Second, I added a one-time calibration step where the user holds their hand near a target; if calibration times out, the app suggests turning on a light. It is blunt, it is honest about the technology's limits, and it converted most "this is broken" reports into "the app told me to turn on a light."
+
+Field of view was the second hardware surprise. A phone in portrait has a subjectively narrower horizontal FOV than a laptop camera, so the "front plane" where I pin the hand depth needed a per-device adjustment. The calibration step handles this too: HELIOS computes the depth value that makes the user's hand hit the target, then stores it in `localStorage`. One constant, one user gesture, and the whole coordinate space becomes device-agnostic.
+
+## Lessons I Learned the Hard Way
+
+If I started HELIOS tomorrow, these five rules would be carved into the README from the first commit:
+
+- **Never feed MediaPipe `z` into Three.js raw.** It is relative, it is unstable, and it is the top source of phantom motion. Rescale it and clamp it.
+- **Sanitize every landmark before it touches the scene graph.** A NaN in one coordinate poisons the matrix math for the whole object. I filter frames where any landmark value is non-finite and interpolate from the previous good frame.
+- **The handedness label is a hint, not a fact.** When hands cross, MediaPipe can swap left and right mid-frame. Interactions that depend on "left hand grabs object A" will randomly break; design interactions around hand position instead.
+- **React to video resolution changes.** `getUserMedia` can hand you a different resolution on the second call, and mobile browsers do it opportunistically. The coordinate conversion must read `videoWidth` and `videoHeight` every frame, not once at startup.
+- **Test with a real person in a real room.** A development environment with warm lighting and a stable desk produces flattering tracking results. A user's dimly lit bedroom will not. The detection meter and calibration step exist because of this, and they are the two most-used features in the app.
+
+<KeyTakeaways items={["Decouple hand tracking from rendering: one loop for inference, one loop for Three.js, with a shared mutable frame between them.", "Convert MediaPipe's normalized 2D landmarks to 3D by unprojecting through a perspective camera whose FOV approximates the webcam's.", "Treat MediaPipe's `z` as a relative, unitless depth offset, never as metric distance.", "Design a small, debounced gesture vocabulary; pinch, poke, and open are enough, and three-frame holds kill most jitter.", "Ship a calibration step and a live detection meter; silent tracking failure is the most damaging failure mode in spatial web apps.", "WebXR was the wrong tool for this project because it hides the camera frames and forces a separate AR session; MediaPipe + Three.js works on any camera-equipped browser."]} />
+
+
+<Faq items={[{"q": "Does HELIOS work on a phone?", "a": "Yes, but with caveats. The tracking runs on iOS Safari and Android Chrome, and I benchmarked acceptable performance on an iPhone 12 and a Pixel 7. Phones have narrower fields of view and more aggressive battery management, so the calibration step and the timeupdate fallback loop are essential there."}, {"q": "Why @mediapipe/hands instead of the newer @mediapipe/tasks-vision HandLandmarker?", "a": "Because HELIOS started before the tasks API was stable, and by the time it shipped, the legacy API's onResults callback fit the two-loop architecture perfectly. The tasks API is the better long-term choice for new projects \u2014 smaller bundle, better model loading \u2014 but the conversion math in this article applies unchanged to both."}, {"q": "Can I use this with WebXR for an AR experience?", "a": "Yes, with friction. You can run MediaPipe in a regular HTML page, then offer a WebXR \"enter immersive\" button that switches to a headset viewport. The tracking data from the 2D camera is still valid as an input source. What you cannot do is run MediaPipe on the frames inside a WebXR session, because the session does not expose them."}, {"q": "How do I handle the privacy prompt gracefully?", "a": "You cannot skip it, and you should not try. What works is requesting camera access only after the user has clicked a \"Start\" button, so the prompt appears as a direct response to a user action. Then keep a visible \"tracking lost\" state so the user never wonders whether the app is frozen or waiting on permission."}]} />
+
+## Conclusion
+
+The most valuable thing I built in HELIOS was not the hand tracker or the 3D scene; it was the discipline of treating the physical camera as an unreliable, drifting sensor and designing everything around that fact. Spatial interfaces on the web are going to be built by people willing to do exactly this: not by waiting for a perfect API, but by stitching together a WASM model, a WebGL renderer, and a user calibration step, then being honest about the failure modes.
+
+The two-loop architecture is portable beyond hand tracking. Face tracking, pose estimation, even background segmentation all follow the same shape: inference produces a noisy, intermittent interpretation of reality, and the render layer must smooth, predict, clamp, and continue drawing no matter what. If you are building any real-time computer vision feature for the browser, copy that shape first and worry about the models second.
+
+There are still hard problems I did not solve. Occlusion between hands, robust depth, and graceful behavior in bad lighting all remain open. But the base layer works, it runs on ordinary laptops and phones, and the source is public. If you want to poke the cursor, grab a cube, and see how the coordinate spaces feel in practice, clone the repo and read `src/pipeline.ts` and `src/spatial.ts`. The magic lasts about thirty seconds; then the edge case education begins.
+
+[View the project on GitHub](https://github.com/3ni8ma/HELIOS)

@@ -88,7 +88,7 @@ export default function BackgroundEffect({ effect }: BackgroundEffectProps) {
   return (
     <div
       {...attrs}
-      className="absolute inset-0 -z-10 pointer-events-none will-change-transform"
+      className="fixed inset-0 -z-10 pointer-events-none will-change-transform"
       aria-hidden="true"
     />
   );

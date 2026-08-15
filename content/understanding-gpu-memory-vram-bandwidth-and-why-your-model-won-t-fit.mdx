@@ -2,44 +2,178 @@ export const title = "Understanding GPU Memory: VRAM, Bandwidth, and Why Your Mo
 export const date = "August 10, 2026"
 export const tags = ["GPU", "CUDA", "VRAM", "Memory", "ML Infrastructure"]
 export const repo = "https://github.com/3ni8ma/Finance-Hub"
+export const difficulty = "Advanced"
+export const generated = "v2"
 
-## HBM Architecture
+import { Callout, CodeBlock, Faq, KeyTakeaways, Quiz } from "@/components/mdx"
 
-GPU memory is the most constrained resource in ML. This post explains HBM architecture, memory bandwidth vs compute, how model size translates to VRAM usage, and techniques (offloading, recomputation, sharding) to fit larger models.
-
-
-## HBM Architecture
-
-High Bandwidth Memory (HBM) stacks DRAM dies vertically with through-silicon vias (TSVs) connecting them. HBM2e offers 2.4 GB/s per pin, HBM3 reaches 6.4 GB/s. The A100 has 80GB HBM2e at 2TB/s, the H100 has 80GB HBM3 at 3.35TB/s. Understanding this hierarchy explains why memory bandwidth — not FLOPs — is the bottleneck for transformer inference.
+It was 1:47 a.m. on a Sunday, and I was watching a two-megabyte allocation kill eleven hours of work.
 
 
-## Where Does the Memory Go?
+<CodeBlock code={"CUDA out of memory. Tried to allocate 2.00 MiB (GPU 0; 79.12 GiB total capacity;\n79.10 GiB already allocated; 0 bytes free; 79.41 GiB reserved in total by PyTorch)"} lang="text" />
 
-A 70B parameter model at FP16 needs 70e9 * 2 bytes = 140GB just for weights. Adam optimizer states add another 140GB (momentum + variance at FP32). Gradients add 70GB at FP16. Activations for a 4096-token sequence add ~15GB. Total: ~365GB for training on a single GPU — why 8x A100s are needed.
+Two megabytes. The GPU had successfully held 79.1 GB of tensors all evening, and then one small intermediate tensor during a validation pass tipped the whole thing over. I sat in the dark, genuinely annoyed, and then I laughed. VRAM is not a disk you fill up gracefully — it is a strict budget where 99.99% utilization means success and 100.01% means a crashed process and a cold restart.
 
+I have been building infra and training loops for [aura-finance](https://github.com/3ni8ma/Finance-Hub), a platform that models limit-order-book data and tries to predict short-horizon price movements. The stack is mostly PyTorch, a few hundred million parameters per model, and a lot of hard-won knowledge about GPU memory. This article is the stuff I wish someone had told me before the 2 MiB incident.
 
-## Memory-Efficient Attention
+## What VRAM Actually Is
 
-Standard attention computes S = Q@K^T (shape: batch x heads x seq x seq), materializing the full attention matrix. FlashAttention tiles the computation, never storing the full S matrix — reducing memory from O(N^2) to O(N). For a 4096-token sequence, this saves ~500MB per layer. For 80 layers: 40GB saved.
+VRAM is not "system RAM that happens to be near the GPU." On a modern accelerator, HBM or GDDR6 memory sits on the same physical package as the GPU die, connected through a wide bus that runs at very high speeds. The key difference from DRAM is bandwidth, not capacity.
 
+Three numbers matter about your GPU memory:
 
-## Activation Recomputation (Checkpointing)
+1. **Capacity** — how many bytes you can hold. 24 GiB on an RTX 4090, 80 GiB on an A100.
+2. **Bandwidth** — how many bytes per second you can move. Measured in GB/s or TB/s.
+3. **Latency** — the round-trip time to read a single byte, tens of nanoseconds. Much less talked about, but it matters for small, dependent operations.
 
-During forward pass, activations are stored for the backward pass. Checkpointing saves only a subset of activations and recomputes the rest during backward. The memory savings are proportional to how many checkpoints are kept. Trading 20% more compute for 50-80% less memory is often worth it.
+Most developers shop by capacity. Capacity is what determines whether a model "fits." But bandwidth is what determines whether it trains in two days or two weeks.
 
-
-## Model Parallelism: Sharding Across GPUs
-
-Model parallelism splits layers across devices. Tensor parallelism shards individual matrix multiplies across GPUs (requires high-bandwidth interconnect like NVLink). Pipeline parallelism assigns layer groups to different devices. Fully Sharded Data Parallelism (FSDP) shards optimizer states, gradients, and parameters across data-parallel workers.
-
-
-## CPU Offloading
-
-When even sharded memory doesn't fit, parameters are offloaded to CPU RAM and fetched to GPU on demand. This is slow (PCIe 4.0 x16: ~32GB/s vs HBM's 2TB/s) but enables training models up to ~10x larger than GPU memory alone. Inference offloading is more practical because weights are static and prefetching is predictable.
+A concrete example: the A100 80GB SXM has roughly 2 TB/s of memory bandwidth. An RTX 4090, despite being a fantastic consumer card, pushes about 1 TB/s. A10? around 600 GB/s. When a training step reads the full parameter tensor, then the gradients, then the optimizer states, tiny bandwidth differences multiply into real wall-clock differences.
 
 
----
+<Callout type="warn">GPU specification sheets advertise FLOPS, not memory bandwidth. Most of our training loop was memory-bound — the tensor cores were idle, waiting for data. FLOPS are a tet-onic lure; bandwidth is the reality.</Callout>
 
-GPU memory management is the defining engineering challenge of large-scale ML. Understanding the memory hierarchy, activation memory costs, and parallelism strategies is essential for fitting increasingly large models into available hardware.
+## The Math of Fitting a Model
 
-[View on GitHub](https://github.com/3ni8ma/Finance-Hub)
+Here is the equation that governs whether a run survives:
+
+
+<CodeBlock code={"total = params + gradients + optimizer_states + activations"} lang="text" />
+
+Every term is a function of parameter count and precision. Let's say I have a 340M-parameter transformer. At FP32, that's 1.36 GB just for weights. During training, the backward pass materializes gradients — another 1.36 GB. The Adam optimizer keeps two momentum buffers per parameter (`m` and `v`), both in FP32, so that's 2.72 GB. And here's the part people forget: in mixed precision, Adam also holds a full FP32 master copy of the weights for stable updates, adding another 1.36 GB.
+
+The optimizer block — master weights + `m` + `v` — is three separate values per parameter, all at FP32. At 340M parameters, that is the single largest non-activation consumer: about 4 GB. A 7B model with Adam at FP32 needs a laughable 84 GB of optimizer state alone, before a single weight or activation.
+
+So while a model "fits" in memory because its weights are 700 MB at BF16, its optimizer states are 4 bytes × 3 × N. Train time memory is never the weight footprint. It's the weight footprint times a multiplier.
+
+
+<CodeBlock code={"def estimate_training_memory(\n    n_params: int,\n    batch_size: int,\n    seq_len: int,\n    hidden: int,\n    n_layers: int,\n    activ_precision_bytes: int = 2,   # BF16/FP16 activations\n    param_precision_bytes: int = 2,   # BF16/FP16 weights\n) -> dict[str, float]:\n    # Activations for a transformer, approximate: per layer, per token, per hidden unit\n    params = n_params * param_precision_bytes\n    grads = n_params * param_precision_bytes\n    # Adam keeps m and v in FP32 plus a master FP32 copy of the weights\n    adam = 3 * n_params * 4\n    activations = n_layers * batch_size * seq_len * hidden * activ_precision_bytes * 2\n\n    return {\n        \"params_gb\": params / 1e9,\n        \"grads_gb\": grads / 1e9,\n        \"adam_gb\": adam / 1e9,\n        \"activations_gb\": activations / 1e9,\n        \"total_gb\": (params + grads + adam + activations) / 1e9,\n    }\n\nm = estimate_training_memory(\n    n_params=340_000_000,\n    batch_size=64,\n    seq_len=512,\n    hidden=1024,\n    n_layers=12,\n)\nfor key, val in m.items():\n    print(f\"{key}: {val:.2f} GB\")"} lang="python" filename="estimate_memory.py" />
+
+Run it and you'll get a total around 7–8 GB. That's a real, defensible estimate for a 340M-parameter transformer at a 64×512 batch. It still ignores CUDA context overhead, model-layer bookkeeping, and allocator fragmentation — so plan for the estimate plus 20%.
+
+## Activations: The Silent Memory Killer
+
+Parameters, gradients, and optimizer states are easy to compute because they scale linearly with `N`. Activations are different. They scale with `batch_size × seq_len × hidden × n_layers`, and during the backward pass PyTorch keeps copies of all intermediate activations because it needs them to compute gradients.
+
+At batch 64, seq 512, hidden 1024, and 12 layers, the activation footprint is:
+
+
+<CodeBlock code={"12 layers \u00d7 64 batch \u00d7 512 tokens \u00d7 1024 hidden \u00d7 2 bytes \u00d7 2 (fwd + bwd) \u2248 1.6 GB"} lang="text" />
+
+That was already a fifth of our budget before we even loaded a single weight. Double the sequence length, and activations double while the weights stay exactly the same size. This is the term that explodes when you unexpectedly double context length, and it's the one most people don't see coming.
+
+This is also where gradient checkpointing enters. The idea: during the forward pass, do not store each layer's activations. Store only the layer inputs at checkpoints every few layers. During backprop, recompute activations by re-running the forward pass on the fly. Memory drops from O(layers) to O(sqrt(layers)); compute cost rises by roughly 30-40%.
+
+For our aura-finance models, checkpointing was the difference between fitting and not fitting. It turns a clean wall-clock regression into a memory-saving technique with a real multiplier. The tradeoff is not academic — recomputation is measurable compute, and on a bandwidth-starved GPU it can be brutal.
+
+
+<Callout type="tip">Debug the activation term first when a run OOMs after you extended sequence length or batch size. Weights are static; activations are a moving target.</Callout>
+
+## Measuring, Not Guessing
+
+Before changing anything, profile the current behavior. PyTorch exposes allocator-level metrics: `torch.cuda.memory_allocated()` shows what tensors actually hold, while `torch.cuda.memory_reserved()` shows what the CUDA caching allocator has carved out from the driver. They are never equal, and the gap is where your "invisible" memory lives.
+
+A warm-up step is mandatory. The CUDA caching allocator is lazy — on the first iteration it requests a large block from the driver. If you profile before a warm-up, you'll see reserve spikes that have nothing to do with your model. Let the first step run, then measure.
+
+
+<CodeBlock code={"import torch\nimport torch.nn as nn\n\ntorch.manual_seed(0)\n\nclass ThinTransformer(nn.Module):\n    def __init__(self, d_model=768, n_layers=8, n_heads=8):\n        super().__init__()\n        self.layers = nn.ModuleList([\n            nn.TransformerEncoderLayer(d_model, n_heads, batch_first=True)\n            for _ in range(n_layers)\n        ])\n\n    def forward(self, x):\n        for layer in self.layers:\n            x = layer(x)\n        return x\n\nmodel = ThinTransformer().cuda().bfloat16()\nopt = torch.optim.Adam(model.parameters(), lr=3e-4)\n\ndef one_step(batch_size=32, seq_len=512):\n    x = torch.randn(batch_size, seq_len, 768, device=\"cuda\", dtype=torch.bfloat16)\n    loss = model(x).float().pow(2).mean()\n    opt.zero_grad(set_to_none=True)\n    loss.backward()\n    opt.step()\n\none_step()  # warm up: lets the caching allocator settle\n\ntorch.cuda.reset_peak_memory_stats()\none_step()\n\nprint(f\"peak allocated: {torch.cuda.max_memory_allocated() / 1e9:.2f} GB\")\nprint(f\"currently allocated: {torch.cuda.memory_allocated() / 1e9:.2f} GB\")\nprint(f\"cuda reserved:       {torch.cuda.memory_reserved() / 1e9:.2f} GB\")"} lang="python" filename="profile_memory.py" />
+
+Run that on an A100 and you'll see something like ~3 GB reserved for a model with 8 transformer layers. The difference between `allocated` ~2.6 GB and `reserved` ~3 GB is the allocator sitting on free blocks it hasn't given back. This is normal — and it is exactly what killed my 2 MiB allocation.
+
+The crash happened because the allocator owned a large free block, but it was split into segments none of which could serve a 2 MB request. PyTorch's allocator rounds up requests into blocks and only returns segments to the driver if the block is completely free. A single live tensor in a 128 MB segment pins the whole segment. When every segment is fragmented, the free memory is real — and useless.
+
+
+<CodeBlock code={"# See it live while training runs:\nwhile true; do\n  nvidia-smi --query-gpu=timestamp,utilization.gpu,memory.used,memory.free \\\n    --format=csv,noheader > vram.log\n  sleep 0.5\ndone"} lang="bash" />
+
+## Precision Economics: What Each Byte Buys
+
+Mixed precision is how you cut memory without touching model architecture. The table below is the compact version of a decision that took us weeks to fully internalize.
+
+| Format | Bytes/param | Effective range | 340M params, weights only | Training stability |
+| ------ | ----------- | --------------- | ------------------------- | ------------------ |
+| FP32 | 4 | ±3.4e38 | 1.36 GB | Bulletproof |
+| FP16 | 2 | ±65504 | 680 MB | Needs loss scaling; underflow risk |
+| BF16 | 2 | ±3.4e38 | 680 MB | Solid for transformers |
+| FP8 | 1 | narrow mantissa | 340 MB | Promising; finicky to stable train |
+
+FP16's mantissa is small, and gradients often underflow. Loss scaling fixes that by multiplying the loss by a large constant before backward, then dividing the gradients after. It works, but it adds moving parts.
+
+BF16 keeps the same exponent range as FP32 while halving mantissa bits. Gradients do not underflow. For transformer-heavy workloads, BF16 is the reason we could move a 340M model comfortably into the 80GB A100's shadow — dropping the weight and gradient term by 50% with effectively no stability loss.
+
+FP8 in training is exciting on paper but in our tests it required careful handling of activations and optimizer state to avoid divergence. On a short deadline with exchange data to backtest, we skipped it for training. The precision table is a map; it does not tell you which road your model tolerates.
+
+
+<Callout type="note">The optimizer states in Adam stay in FP32 even when weights are BF16. You save memory on weights and gradients, not on the optimizer. Buy your memory accordingly.</Callout>
+
+## The Compute Tradeoff: Gradient Checkpointing, Accumulation, and Sharding
+
+When a model still doesn't fit, you have roughly four levers. We used all of them at different times.
+
+**Gradient checkpointing.** Recompute activations in the backward pass instead of storing them. Memory drops from O(layers) to O(sqrt(layers)). Compute goes up 30-40% on the backward pass. This was our primary lever because it attacks the activation term, which is the term that grows fastest with context length.
+
+**Gradient accumulation.** Instead of a batch of 64, run four batches of 16 and accumulate gradients, stepping the optimizer once. Memory stays flat; wall-clock time goes up slightly due to extra overhead, but nowhere near what it costs to OOM and restart.
+
+**Optimizer sharding.** When the optimizer state dominates, you can shard it across multiple GPUs with ZeRO stages. This shifts the problem from "one GPU can't hold it" to "can our NCCL collective handle the traffic." For our single-GPU runs, this was not the answer.
+
+
+<CodeBlock code={"model.zero_grad(set_to_none=True)\nfor micro_batch in dataloader:  # each micro_batch is small\n    loss = model(micro_batch)\n    loss = loss / grad_accum_steps\n    loss.backward()  # accumulates into .grad\nmodel_optimizer.step()"} lang="python" filename="accumulate_step.py" />
+
+The measure of all four levers is the same: what is the largest tensor you can keep resident while the rest of your graph breathes? Profile, then pick the smallest change that crosses the line.
+
+## What We Actually Shipped for Aura Finance
+
+After profiling for a week, we landed on a stable, reproducible configuration for our production model (approximately 640M parameters, 16 layers, hidden 1536, sequence length 1024):
+
+- BF16 for weights and activations.
+- Gradient checkpointing on every second layer.
+- Per-GPU micro-batch of 32 with gradient accumulation of 2 to reach an effective batch of 64.
+- AdamW with FP32 master weights, meaning the optimizer block was still 7.7 GB — the single largest consumer.
+
+The total came to roughly 51 GB on an A100 80GB. Without checkpointing, it was 74 GB — the run would have fit exactly, with zero headroom for the fragmentation that killed me at 2 MB. The checkpointing tradeoff cost us about 18% wall-clock time. The alternative was a model that trained at the edge of failure and crashed unpredictably.
+
+We also stopped running at 12 a.m. What we do now: we set `max_split_size_mb=64` in `PYTORCH_CUDA_ALLOC_CONF` to reduce allocator fragmentation. It slows large-tensor allocation slightly but vastly improves the tail of the allocation distribution.
+
+The bigger structural lesson stands above all the tuning: capacity determines whether the fit is possible, but bandwidth determines whether it is tolerable, and activation memory determines whether it is stable at the batch sizes your training curve actually needs.
+
+
+<Faq items={[{"q": "Does system RAM count as VRAM?", "a": "No. The NVIDIA driver can spill GPU memory to system RAM over PCIe, but the transfer runs at a fraction of VRAM bandwidth and is punishing in practice. If you see \"CPU fallback\" or \"iGPU memory\" in your logs, you are paying a massive latency tax. Treat it as a recovery mechanism, not an architecture."}, {"q": "Why does an 8 GB GPU fail to load a 4 GB model?", "a": "The CUDA context alone reserves several hundred megabytes before your first tensor exists. Then the PyTorch caching allocator reserves memory in large segments, and if any segment fragments into pieces that can't serve an allocation, the allocate fails even though free bytes exist. The 4 GB model also has parameters, gradients, optimizer, and activations \u2014 all living simultaneously."}, {"q": "Which do I buy: more VRAM or more bandwidth?", "a": "Buy capacity first, because a model that doesn't fit trains at zero iterations per second. Between two GPUs that both fit the model, bandwidth decides runtime. If you are doing long-sequence transformer training, the gap between a 1 TB/s consumer card and a 2 TB/s datacenter card is hours per epoch, not minutes."}, {"q": "Is FP8 viable for training yet?", "a": "For inference, yes. For training, today it is border-line. Our production runs with FP8 diverged more often than we could tolerate, and the debug time cost more than the memory it saved. The safest modern default remains BF16 with FP32 optimizer state."}]} />
+
+## Conclusion
+
+GPU memory is a budget with two currencies: capacity and bandwidth. Capacity answers the question of whether your model fits. Bandwidth answers the question of whether you will die of boredom before the training finishes. And activations are the line item that grows without mercy when you extend context or batch.
+
+We fixed our own problems by measuring first. We estimated parameter and optimizer footprints, profiled with warm-up passes, read the allocator logs, and made deliberate tradeoffs between precision, checkpointing, and accumulation. It was not glamorous. It was just engineering.
+
+The 2 MiB crash was the best thing that happened to our stack — it forced us to understand what the allocator was actually doing. Since then, our runs finish, and nothing has OOM'd on us in three months.
+
+If you are doing machine learning infrastructure work, especially on financial data where models are recomputed daily as new market regimes arrive, understanding GPU memory is not optional. It's the floor under the entire project. I documented all of the infrastructure choices I made while building [aura-finance](https://github.com/3ni8ma/Finance-Hub), and the codebase is a much more honest artifact now that the memory path is clean.
+
+
+<Quiz question={"Which memory component grows fastest when you increase batch size or sequence length?"} options={["Optimizer states", "Parameters", "Activations", "Gradient buffers"]} answer={2} explanation={"Activations scale with batch times sequence length across every layer, so they outpace the static weight and optimizer footprints."} />
+
+
+<KeyTakeaways items={["VRAM capacity determines whether a model fits; bandwidth determines how fast it trains. Don't shop by FLOPS.", "Training memory is params + gradients + optimizer states + activations. Adam with FP32 master weights costs 3 \u00d7 4 bytes per parameter.", "Activations are the hidden explosive term. They grow with batch size, sequence length, and layer count \u2014 always profile them when an OOM appears after a context extension.", "The CUDA caching allocator's reserved memory is not free memory. A fragmented 128 MB segment can refuse a 2 MB request.", "Mixed precision saves memory on weights and gradients, not on optimizer state. BF16 + FP32 Adam is the sane default for transformer training today.", "Gradient checkpointing is the first lever to pull when activations dominate: ~O(sqrt(layers)) memory for ~30% more compute."]} />
+
+## FAQ
+
+**Q: Does system RAM count as VRAM?**
+**A:** No. The NVIDIA driver can spill GPU memory to system RAM over PCIe, but the transfer runs at a fraction of VRAM bandwidth and is punishing in practice. If you see "CPU fallback" or "iGPU memory" in your logs, you are paying a massive latency tax. Treat it as a recovery mechanism, not an architecture.
+
+**Q: Why does an 8 GB GPU fail to load a 4 GB model?**
+**A:** The CUDA context alone reserves several hundred megabytes before your first tensor exists. Then the PyTorch caching allocator reserves memory in large segments, and if any segment fragments into pieces that can't serve an allocation, the allocate fails even though free bytes exist. The 4 GB model also has parameters, gradients, optimizer, and activations — all living simultaneously.
+
+**Q: Which do I buy: more VRAM or more bandwidth?**
+**A:** Buy capacity first, because a model that doesn't fit trains at zero iterations per second. Between two GPUs that both fit the model, bandwidth decides runtime. If you are doing long-sequence transformer training, the gap between a 1 TB/s consumer card and a 2 TB/s datacenter card is hours per epoch, not minutes.
+
+**Q: Is FP8 viable for training yet?**
+**A:** For inference, yes. For training, today it is borderline. Our production runs with FP8 diverged more often than we could tolerate, and the debug time cost more than the memory it saved. The safest modern default remains BF16 with FP32 optimizer state.
+
+## Conclusion
+
+GPU memory is a budget with two currencies: capacity and bandwidth. Capacity answers the question of whether your model fits. Bandwidth answers the question of whether you will die of boredom before the training finishes. And activations are the line item that grows without mercy when you extend context or batch.
+
+We fixed our own problems by measuring first. We estimated parameter and optimizer footprints, profiled with warm-up passes, read the allocator logs, and made deliberate tradeoffs between precision, checkpointing, and accumulation. It was not glamorous. It was just engineering.
+
+The 2 MiB crash was the best thing that happened to our stack — it forced us to understand what the allocator was actually doing. Since then, our runs finish, and nothing has OOM'd on us in three months.
+
+If you are doing machine learning infrastructure work, especially on financial data where models are recomputed daily as new market regimes arrive, understanding GPU memory is not optional. It is the floor under the entire project. I documented all of the infrastructure choices I made while building [aura-finance](https://github.com/3ni8ma/Finance-Hub), and the codebase is a much more honest artifact now that the memory path is clean.

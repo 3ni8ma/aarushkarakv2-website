@@ -12,12 +12,15 @@ export const metadata: Metadata = {
 };
 
 export default function Blog() {
-  const posts = getAllPosts().map(({ slug, title, date, excerpt }) => ({
-    slug,
-    title,
-    date,
-    excerpt,
-  }));
+  const posts = getAllPosts().map(
+    ({ slug, title, date, excerpt, readingTime }) => ({
+      slug,
+      title,
+      date,
+      excerpt,
+      readingTime,
+    }),
+  );
 
   return (
     <div className="relative isolate min-h-screen overflow-hidden">

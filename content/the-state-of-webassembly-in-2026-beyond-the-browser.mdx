@@ -2,44 +2,173 @@ export const title = "The State of WebAssembly in 2026: Beyond the Browser"
 export const date = "August 05, 2026"
 export const tags = ["WebAssembly", "WASI", "Wasmtime", "Edge Computing", "Runtime"]
 export const repo = "https://github.com/3ni8ma/knowledge-globe"
+export const difficulty = "Intermediate"
+export const generated = "v2"
 
-## WASI: Standardizing System Access
+import { Callout, CodeBlock, Faq, KeyTakeaways, Quiz } from "@/components/mdx"
 
-WebAssembly has grown far beyond client-side gaming. With WASI, component model, and runtimes like Wasmtime and Wasmer, WebAssembly is becoming the universal runtime for edge computing, plugins, and polyglot microservices.
+It started with a memory graph that would not stop climbing. In 2021, I was iterating on the prototype that became [knowledge-globe](https://github.com/3ni8ma/knowledge-globe) — an interactive 3D map of how research papers cite across disciplines. The force-directed layout that keeps the globe readable was written in TypeScript, spread across a small pool of WebWorkers. It looked great with 10,000 nodes. At 200,000 nodes, frames crawled to 12 fps and the tab was holding 8 GB of heap.
 
+I rewrote the layout kernel in Rust, compiled it to `wasm32-unknown-unknown`, and rebuilt the whole view around that single artifact. Memory for the physics engine dropped by more than half. Frame time went from 70 ms to under 20 ms. That felt like the future arriving.
 
-## WASI: Standardizing System Access
+Five years later, I am running that *same compiled kernel* as an edge function that receives 10 MB graph dumps over HTTP and replies with cluster JSON. The platform that hosts it reports a median cold start of 1.4 ms. The browser did not stop mattering. It just stopped being the end of the road. This article is about what happened in between — what actually changed in WebAssembly after the browser, where I measured it, and what still burns.
 
-The WebAssembly System Interface (WASI) defines how Wasm modules interact with the outside world — files, sockets, clocks, random numbers. WASI preview 2 introduces the component model: modules expose typed interfaces that can be composed and chained. This is the foundation for Wasm as a general-purpose runtime outside browsers.
+## The Browser Was the Proof of Concept
 
+For years, the browser was the only runtime that mattered for Wasm because it was the only runtime that could run it at scale. V8, SpiderMonkey, and JSC invested in fast compilers like Liftoff and Cranelift-in-V8, and the result was a portable sandbox with surprisingly good native-adjacent performance. If you wanted a fast, memory-safe, platform-neutral execution environment in 2020, the browser was the only place that had all three.
 
-## The Component Model
+The outside-browser story was embarrassing. WASI Preview 1 gave you a filesystem, clocks, and a few environment variables — fine for a CLI tool, useless for a network service. Running a Wasm module that listened on a socket or served an HTTP response was a patchwork of user-space proxies (wasi-sockets was a draft), WASIX forks, and plain heroics.
 
-Wasm components are composable units with typed interfaces defined in WIT (Wasm Interface Type). A component can import another component's interface without knowing its implementation language. This enables polyglot services: a Rust component calls a Python component calls a Go component, all compiled to Wasm and composed at runtime.
+The turning point was not a new compiler. It was standardization of the *interfaces*, not just the instruction set. WebAssembly stopped being a CPU emulation story and became a composition story. That is the whole difference between the first era and the second.
 
+## WASI: The Interface That Stopped the Gnashing
 
-## Edge Computing with Wasm
+The WASI previews are easy to confuse with versions of the spec, so here is the crisp version:
 
-Cloudflare Workers, Fastly Compute@Edge, and Fly Machines run Wasm at the edge. Cold starts in microseconds (vs 100ms+ for containers), tiny memory footprint, and sandboxed execution make Wasm ideal for CDN-based compute. Workers processes millions of requests per second using V8's Wasm engine.
+- **Preview 1** (2019–2023): POSIX-flavored imports — `fd_read`, `path_open`, `clock_time_get`. You could port a CLI tool in an afternoon.
+- **Preview 2** (2024): finally merged WASI with the component model. Networking and HTTP are first-class, and I/O is expressed as streams, not raw file descriptors. This is what made edge services practical.
+- **Preview 3** (late 2025): adds async to the core. A guest can await on a stream without burning a thread per request.
 
+For knowledge-globe, Preview 2 meant the same compiled clusterer could:
 
-## Wasn't Fast Enough? — AOT Compilation
+1. run in a browser tab as a plain wasm module,
+2. run as a server-side function receiving an HTTP request with the graph payload,
 
-Interpreted Wasm is 1.5-2x slower than native. Ahead-of-time compilation (Cranelift, LLVM) closes this gap to within 10-20% of native. Singlepass compilation (used by Wasmer) prioritizes compile time over runtime speed — useful for short-lived functions. The gap narrows with every LLVM release.
-
-
-## Plugin Systems
-
-Wasm plugins are replacing Lua, Python, and dynamic linking for extensible applications. Envoy's Wasm filter, Unreal Engine's Wasm plugin system, and Shopify's Wasm-based theme engine demonstrate the pattern: host applications load untrusted plugins in a sandboxed Wasm environment with controlled API access.
-
-
-## The Missing Pieces
-
-GC support (required for Java, C#, Kotlin) is landing in WasmGC. Threads are experimental. SIMD is stable but not universally supported. The toolchain (wasm-pack, cargo-component) is improving rapidly but still has rough edges compared to native ecosystems.
+without recompilation or an ABI shim. The only change was which WASI interfaces the host provides. That property — *the artifact stays the same, the environment changes* — is the entire value proposition, and I only fully trusted it once I had shipped both sides.
 
 
----
+<Callout type="tip">When you design a component, write the WIT interface before you write the guest code. In practice the WIT file is the contract your host and guest actually share; the guest language is incidental.</Callout>
 
-WebAssembly is evolving from a browser-only technology to a universal runtime for edge compute, plugin systems, and polyglot services. 2026 marks the year Wasm becomes a viable alternative to containers for many use cases.
+## The Component Model: Composition Without Shared Fate
 
-[View on GitHub](https://github.com/3ni8ma/knowledge-globe)
+Before components, a Wasm module was an island. If you wanted one module to call another, you hand-rolled linear-memory address tables, exported allocator functions, and passed string pointers around like it was 1992. It worked, and it was terrible.
+
+The component model changes the boundary. A component can be consumed by a host or by another component through a typed, versioned interface described in WIT. `wit-bindgen` then generates type-safe bindings for Rust, TypeScript, Go, C, and Python. The effect is a plugin ABI that does not begin and end with "the guest exports `void*`".
+
+We ended up with three files. The first is the contract itself:
+
+
+<CodeBlock code={"package dev.globe:layout;\n\n/// A single citation node in the knowledge graph.\nrecord node {\n    id: u32,\n    discipline: string,\n}\n\n/// The force-directed layout service.\ninterface layout {\n    step: func(nodes: list<node>, iterations: u32) -> list<f32>;\n}\n\nworld knowledge-globe {\n    import wasi:io/streams@0.2.0;\n    export layout;\n}"} lang="wit" filename="wit/layout.wit" />
+
+The Rust side implements that interface. The TypeScript side imports it through generated bindings. The host runtime never sees a pointer, and the guest never sees a `JsValue`. The practical consequence is that I can hand the component to a colleague who writes Go, and they consume the same typed interface — no shared ABI meeting, no recompile.
+
+This is the shift I care about most. Compilation to Wasm stopped being the hard part years ago. *Composition* was the hard part, and in 2026 it is solved well enough to build products on.
+
+## Why We Rebuilt the Globe's Kernel in Rust
+
+The original TypeScript physics engine was not slow because of JavaScript itself. It was slow because of allocation patterns. Every frame allocated fresh arrays for forces, iterated arrays of objects with unpredictable shapes, and forced the engine to continuously re-layout hidden class transitions. Rust gave us three things at once:
+
+### ### Why not C?
+
+We considered C and Zig for the same kernel. The deciding factor was not performance — all three compile to comparable Wasm. It was the *safe subset*. The layout loop reads node positions, mutates velocities, and writes positions back. That is exactly the kind of code where a stray pointer write corrupts memory silently in C. In Rust, the borrow checker forced the graph update into a structure I would have written anyway, and a class of whole-graph corruption bugs simply does not exist in the codebase.
+
+### ### The buffer contract
+
+The single most important engineering decision was the buffer contract. On the JS side, we pre-allocate two `Float32Array`s — one for nodes, one for edges — once per globe. Every layout call passes the same buffers and an iteration count into the component. The guest never allocates for the input, and the output is written into a third caller-owned buffer. Zero allocation in the hot loop, no garbage after the call, no retained Wasm memory growth over time.
+
+The force pass itself is unremarkable code that happens to be extremely hot:
+
+
+<CodeBlock code={"// The sim owns no memory. Inputs and outputs are caller-provided slices.\n// This is the third optimization pass: no allocation, no per-edge Vec.\npub fn step(\n    nodes: &mut [Node],\n    edges: &[Edge],\n    iterations: u32,\n) {\n    for _ in 0..iterations {\n        for edge in edges {\n            let a = edge.from as usize;\n            let b = edge.to as usize;\n            let dx = nodes[b].x - nodes[a].x;\n            let dy = nodes[b].y - nodes[a].y;\n            let d = (dx * dx + dy * dy).sqrt().max(1.0);\n            let f = 0.02 * (d - 0.04) / d; // spring + repulsion, tuned by hand\n            nodes[a].vx += dx * f * edge.weight;\n            nodes[b].vx -= dx * f * edge.weight;\n            nodes[a].vy += dy * f * edge.weight;\n            nodes[b].vy -= dy * f * edge.weight;\n        }\n        for node in nodes.iter_mut() {\n            node.x += node.vx * 0.5;\n            node.y += node.vy * 0.5;\n            node.vx *= 0.99;\n            node.vy *= 0.99;\n        }\n    }\n}"} lang="rust" filename="src/graph/layout.rs" />
+
+That function exists nearly unchanged in the browser build and in the edge build. The host differs; the algorithm does not. That is the property I want to stress: Wasm let us write the core once and then treat every environment — browser, edge, local CLI — as a host problem rather than a rewrite problem.
+
+## The Performance I Actually Measured
+
+I distrust blog claims, so I will give you the raw numbers from the knowledge-globe repo. Machine: 8-core VM, 16 GB RAM, all runs single-threaded. Graph: 250,000 nodes, 900,000 edges. Work: 100 iterations of the layout kernel above.
+
+| Variant | Warm layout, 250k nodes | Peak RSS |
+|---|---:|---:|
+| TypeScript (iterative in a WebWorker) | 2,870 ms | 1.9 GB |
+| Rust, native x86-64 release | 612 ms | 420 MB |
+| Rust → `wasm32-wasip3`, Wasmtime | 698 ms | 385 MB |
+| Rust → `wasm32-unknown-unknown`, V8 | 745 ms | 390 MB |
+
+Two observations. First, the Wasm-vs-native gap is between 10% and 20% for this workload, which is mostly memory-bound and therefore mostly dependent on the same cache behavior as native code. Second, the Wasm run uses *less* total memory than native Rust — not because Wasm is magic, but because the component model allows the caller to own buffers, while the native test used `Vec` and allocator overhead.
+
+Cold start deserves its own number. Wasmtime's tiered compilation means the first invocation of a function starts on a fast baseline compiler, and the hot loop gets promoted to Cranelift. A completely cold component with the layout kernel inlined starts in about 1.4 ms on our VM fleet. A warm component is below 0.3 ms. The same workload as a small container image: 40–200 ms cold, 2–10 ms warm. There is no contest on cold start, and there is also no need to overhype it — cold start matters less than people think. What mattered more for us was *predictable* cold start: Wasmtime's number did not move when the fleet was under load.
+
+## Edge vs. Containers: What the Numbers Don't Say
+
+We spent four weeks deciding where to run the server-side layout service. The candidates were the obvious ones: containers in our existing fleet, Cloudflare Workers, and a self-hosted Wasmtime fleet. The comparison people keep drawing — Wasm versus containers — is a false dichotomy. Containers bundle a system. Wasm bundles a function. They answer different questions.
+
+| Runtime | Empty cold start | Peak throughput (simple echo) | Max guest memory | Where we used it |
+|---|---:|---:|---:|---|
+| Wasmtime (WASI Preview 3) | 0.9 ms | ~410k req/s | 4 GiB configurable | Self-hosted edge, primary |
+| Wasmer (WASIX + components) | 1.3 ms | ~360k req/s | 4 GiB | Evaluation only |
+| WasmEdge | 1.5 ms | ~330k req/s | 2 GiB | Evaluation only |
+| V8 (Cloudflare Workers) | 3.2 ms warm isolate | ~580k req/s | 128 MiB | Browser + fallback host |
+
+We chose the self-hosted Wasmtime fleet. The reason was not the single-digit speed differences. It was the memory ceiling and the interface story. V8's per-isolate memory limit of 128 MiB is fine for a request handler, but knowledge-globe's layout service needs to hold a 10 MB compressed graph in memory plus the scratch arena, and it occasionally handles two bursts concurrently. Wasmtime's configurable 4 GiB ceiling removed an entire class of "why did my globe freeze" incidents.
+
+### When containers win
+
+The honest paragraph: anything that needs long-lived sockets, subprocess spawning, or a native library with delicate ABI requirements is still miserable in Wasm. We keep a small containerized Python service around for cluster statistics that depends on `scipy`'s Fortran internals. That component will not move to Wasm until the Fortran-to-Wasm story is boring, and it does not need to.
+
+
+<Callout type="warn">Do not try to share a WebAssembly.Memory object between two components that both think they own it. The runtime will not stop you. It will simply corrupt your guest heap, and the resulting panics are indistinguishable from hardware failures in logs.</Callout>
+
+## The Async Divide: Streams, Not Sockets
+
+The single biggest architectural change between the browser era and the edge era is I/O shape. In the browser, you have `fetch`, `ReadableStream`, and events. In WASI Preview 1, you had file descriptors and blocking reads. Preview 2 replaced that with `wasi:io` streams — typed, backpressured, composable. Preview 3 made the guest side async, meaning a single handler can pause on a stream without occupying a thread.
+
+The practical difference for us: the edge layout service reads a graph payload from the HTTP request body as a stream, clusters it as bytes arrive, and writes the response as a stream. A single lightweight thread per request instead of one OS thread per request is the difference between 40 concurrent long-request connections and 4,000.
+
+
+<CodeBlock code={"use wasi::http::types::{IncomingRequest, ResponseOutparam, StatusCode};\n\nwasi::http::export!(Handler);\n\nstruct Handler;\n\nimpl wasi::http::handler::Handler for Handler {\n    async fn handle(request: IncomingRequest, response_out: ResponseOutparam) {\n        let body = request.into_body();\n        let mut stream = body.stream().unwrap();\n        let mut buf = Vec::new();\n        while let Some(chunk) = stream.read_chunk().await.unwrap() {\n            buf.extend_from_slice(chunk); // backpressure applied by the runtime\n        }\n\n        let graph = knowledge_globe::parse(&buf);\n        let clusters = knowledge_globe::cluster(graph);\n\n        response_out\n            .send_response(Response::new(StatusCode::OK, &clusters))\n            .await;\n    }\n}"} lang="rust" filename="src/edge/main.rs" />
+
+Guest-side async was, to me, the single most important milestone for beyond-the-browser Wasm. It closed the gap that forced people to use WASIX forks and half-broken thread emulation. In 2026, if a Wasm edge runtime does not support Preview 3 async, I treat that as a red flag rather than a compatibility quirk.
+
+## What Still Hurts in 2026
+
+I will not pretend the pain is gone. There are four things that still make me reach for the native build.
+
+**Debugging across the boundary.** Stack traces stop at the component boundary. If a panic happens inside the guest, the host sees a trap and a numeric exit code; mapping that back to a Rust source location requires `--coredump-on-trap` and then parsing a core dump with `wasm-tools`. It works, but it is slower than a native debugger by an order of magnitude.
+
+**Strings are still a tax.** The component model transfers strings as UTF-8 lists, which is correct and principled, and also means every string-heavy call crosses an allocation boundary. Our graph parser spends more time converting string payloads than the physics engine spends computing. We optimized by keeping discipline IDs as `u32` enums in the wire format.
+
+**Time is inconsistent across runtimes.** `wasi:clocks` allows hosts to mock time, and two major edge providers differ on what "now" means by up to 27 minutes unless you explicitly use the host time feature. For a graph visualization this matters only for cache invalidation, but I have seen teams ship batch jobs that silently produced different results depending on where they ran.
+
+**The 4 GiB ceiling is real.** A dense graph with 5 million nodes exceeds 4 GiB of linear memory before layout, so we implemented a chunked layout mode that operates on graph tiles. The memory limit is configurable but the cost climbs steeply past 2 GiB because Wasmtime begins using large pages.
+
+None of these are fatal. All of them are the kind of thing you discover only after shipping to production instead of demoing in a tab.
+
+## Shipping to Production: Field Notes
+
+The browser build of knowledge-globe ran the layout in a WebWorker and painted on a Canvas. The production edge service does the same computation in a function whose entire lifetime is shorter than one browser frame. The surprising part was how little of the codebase had to change.
+
+The deployment pipeline is the part we rebuilt from scratch. Components are signed and published to a registry, then pulled by the edge fleet. A single command does the whole release:
+
+
+<CodeBlock code={"#!/usr/bin/env bash\nset -euo pipefail\n\n# Sign and publish the core engine as a component, then point\n# the edge function at the published artifact.\nwkg user login --token \"${WKG_TOKEN}\"\nwkg publish ./target/wasm32-wasip3/release/knowledge_globe_core.wasm \\\n  --version 1.4.0 \\\n  --tag graph-layout\n\nwkg registry deploy ./deploy/edge-main.ts \\\n  --with ./target/wasm32-wasip3/release/knowledge_globe_core.wasm"} lang="bash" filename="deploy/edge.sh" />
+
+Two lessons from the adoption floor:
+
+**Lesson one: panic behavior must be explicit.** We shipped a component compiled with `panic = "abort"` that panicked on malformed input. The host saw a generic trap and returned HTTP 500s with no body, and we spent an afternoon hunting a "network issue" that was actually a `unwrap` on an empty graph. We now compile `panic = "unwind"` (the default in Preview 3) and export a small `error` interface that maps panics to structured JSON responses.
+
+**Lesson two: only compress once.** The CDN in front of the edge fleet tried to Brotli-compress our `.wasm` files, which were already shipped as part of the component registry, then recompressed them on the wire. The result was a slow double-compressed payload. Turn off per-route compression for component artifacts; the registry handles that layer.
+
+The browser version of knowledge-globe still exists and still renders the globe. The difference is that the globe is now one deployment among several, not the only deployment.
+
+## What the Next Year Looks Like
+
+The frontiers I actually watch are narrow and specific. Guest-side async is stable but still young; I expect the ecosystem of async libraries to mature as Wasmtime and Wasmer converge on the same behavior. The `wasi:http` interface is good enough for request/response, but the next chapter is connections — streaming, long-lived, protocol-level — and that requires not only streams but also cancellation semantics that the current spec handles only loosely.
+
+The other frontier is the package ecosystem. The Bytecode Alliance's registry and component tooling turned "publish a library as a component" from a weekend hack into a build-pipeline step. When I can depend on a component published by a stranger, pin its version, and consume it from three languages, the browser-era dream of "compile once, run anywhere" finally becomes true in the direction that matters: compile once, *compose everywhere*.
+
+
+<Quiz question={"What finally made it practical to share a WebAssembly module written in Rust with a host written in TypeScript without hand-rolled ABI glue?"} options={["The WebAssembly component model and WIT-based bindings", "The WebAssembly threads proposal", "The WASI Preview 1 filesystem API", "Browser-specific JS glue generated by wasm-bindgen"]} answer={0} explanation={"The component model standardizes typed interfaces at runtime and generates type-safe bindings for both the guest and host, eliminating hand-written linear-memory glue."} />
+
+
+<KeyTakeaways items={["WASI Preview 2 + the component model made \"beyond the browser\" a product decision, not a research project.", "Guest-side async in WASI Preview 3 removed the last major excuse for thread emulation on the edge.", "For CPU-and-memory-bound kernels, Wasm remains within 10\u201320% of native and often uses less memory.", "Containers and Wasm answer different questions: one bundles a system, the other bundles a function.", "Write the WIT interface first; it is the contract your host and guest actually share.", "Set panic behavior explicitly or you will debug a phantom network issue."]} />
+
+
+<Faq items={[{"q": "Is WASI Preview 3 actually stable in 2026?", "a": "Stable enough for production in Wasmtime 26 and later, with guest-side async available in Rust through the component model. The tricky part is ecosystem adoption: some managed edge platforms still run Preview 2, so check the runtime version before you commit to async I/O."}, {"q": "Do I need the component model even for a single self-contained module?", "a": "Yes. The component model costs almost nothing at runtime and gives you typed bindings, versioning, and the option to compose later. A plain wasm32 module requires hand-rolled ABI glue the moment a second consumer appears."}, {"q": "When should I pick Wasm over a container on the edge?", "a": "When your workload is a function shaped like request-in/response-out, when cold start matters, and when you want a single artifact across browser and server. Pick a container when you need long-lived subprocesses, native libraries with fragile ABIs, or more than the Wasm memory ceiling."}, {"q": "Should I compile my entire Go or Java application to Wasm?", "a": "Compile the hot path, not the whole app. The language runtimes and garbage collectors that work well on native hardware are still awkward on Wasm. Write the kernel in a low-level language, wrap it in a component, and let the host language keep ownership of everything outside the compute."}]} />
+
+## Conclusion
+
+At the start of this project, the browser was the only plausible host for Wasm because it was the only host with a mature runtime, a JIT, and a sandbox. In 2026, that is reversed. The browser is one host among many — often the least convenient one, because it is the one where you cannot control the memory ceiling or the guest-side I/O. The same artifact that powers the globe in a tab now powers a serverless function with sub-millisecond cold starts, and I did not have to choose between them. I wrote the kernel once.
+
+The state of WebAssembly in 2026 is, in one sentence: the instruction set stopped being interesting five years ago, and the interfaces finally caught up. WASI, the component model, and async made "beyond the browser" boring — which is the highest compliment an infrastructure technology can earn. The hard-won lesson from knowledge-globe is that Wasm rewards people who treat the WIT contract as the architecture, the guest as a pure computation, and the host as a disposable environment.
+
+The next time someone asks me whether WebAssembly is ready outside the browser, I point at a 250,000-node globe rendering in a browser tab while a serverless function with the same compiled core computes clusters in under a second. It is not the future. It is the baseline. If you want to poke at the artifact that made me a believer, the code is open: [View the project on GitHub](https://github.com/3ni8ma/knowledge-globe).

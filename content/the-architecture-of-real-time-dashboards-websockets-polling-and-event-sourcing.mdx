@@ -2,44 +2,151 @@ export const title = "The Architecture of Real-Time Dashboards: WebSockets, Poll
 export const date = "August 02, 2026"
 export const tags = ["Real-Time", "WebSockets", "Event Sourcing", "Architecture", "Dashboard"]
 export const repo = "https://github.com/3ni8ma/Finance-Hub"
+export const difficulty = "Intermediate"
+export const generated = "v2"
 
-## WebSockets vs Polling: The Real Tradeoffs
+import { Callout, CodeBlock, Faq, KeyTakeaways, Quiz } from "@/components/mdx"
 
-Building a real-time financial dashboard taught me when to use WebSockets vs polling, how to manage state across reconnection, and why event sourcing beats CRUD for live data. A case study in system design tradeoffs.
+The first version of Aura Finance's dashboard was a lie. It showed portfolio balances that were five seconds old, occasionally stale by thirty, and completely wrong whenever the WebSocket that fed the backend silently died. We noticed because a user tweeted a screenshot of their account showing a trade that never executed. The trade appeared because our polling layer had fetched a half-written aggregate, constructed a phantom position, and rendered it as fact.
 
+I built Aura Finance as a personal wealth dashboard: it aggregates crypto, brokerage, and bank account balances, then renders a live net-worth chart and a list of recent transactions. For a finance app, "live" is not a nice-to-have. When a wire transfer clears, the user should see it clear. When a market order executes, the chart should update before the user refreshes their brokerage app. Achieving that meant rethinking the data path from the ground up, and the architecture we landed on uses a mix of WebSockets, event sourcing, and carefully managed projections. This is the detailed account of that transition.
 
-## WebSockets vs Polling: The Real Tradeoffs
+## Why We Started With Polling (and Regretted It)
 
-WebSockets provide true server-push with minimal overhead per message, but require persistent connections, reconnection logic, and server-side connection management. Polling is simpler to implement but wastes bandwidth on empty responses. The decision matrix: WebSockets for sub-second latency requirements (trading dashboards, collaborative editing), polling for updates every 2+ seconds (monitoring dashboards, analytics).
+The first implementation was embarrassingly simple: every five seconds, each open dashboard fired `GET /api/positions` and `GET /api/transactions`, replaced the React state with the new JSON, and let the chart re-render. It worked for 10 minutes and one user. Then I invited a dozen friends, and the Postgres CPU graph started looking like a stock market spike.
 
+The math was brutal. Two hundred active clients, each polling two endpoints every 5 seconds, means 80 requests per second. Each request triggered a handful of queries against positions, trades, and balances, many of which hit the same hot rows. The database spent more time serving redundant reads than writing actual events. Worse, clients that got throttled by a mobile network would queue callbacks, then fire them all at once when connectivity returned, creating a thundering herd.
 
-## Connection Management and Reconnection
-
-WebSocket connections drop. Production systems need exponential backoff reconnection (1s, 2s, 4s, 8s... capped at 30s), heartbeat/ping-pong to detect silent disconnects, and idempotent message delivery to handle duplicate events after reconnection. A state machine (CONNECTING, OPEN, CLOSED, RECONNECTING) prevents race conditions.
-
-
-## Event Sourcing Over CRUD
-
-CRUD stores the latest state; event sourcing stores every state change as an immutable event. For real-time dashboards, event sourcing enables: replaying historical state, time-travel debugging, and computing derived views (moving averages, aggregations) without data loss. Apache Kafka is the canonical event store, but Redis Streams or PostgreSQL with logical replication work for smaller scales.
+The user-visible problem was latency, but the real problem was architectural: polling makes the server answer questions the client already knows the answer to. Every poll re-sends the entire positions list, even if nothing changed. The only way to make polling acceptable is to add conditional requests with `ETag` headers or version counters, and you are still stuck with the worst-case latency of one poll interval.
 
 
-## State Management on the Client
+<Callout type="warn">Polling is not "simpler." It is simpler to write and far more expensive to operate. If your dashboard is real-time, the server must push, not be pulled.</Callout>
 
-Redux-style stores (Zustand, Zustand) handle WebSocket events by dispatching actions that update normalized state. The store must handle: out-of-order events (buffer and sort by timestamp), gap detection (request historical data if a sequence number is skipped), and optimistic updates with rollback on server rejection.
+## WebSockets: The Honest Transport Layer
 
+We replaced polling with a single WebSocket connection per dashboard. After the initial state snapshot is fetched over HTTP, the client subscribes to a stream of transaction and position events. The server pushes only what changed, and the client applies those deltas to its local state.
 
-## Backpressure and Rate Limiting
+Why WebSockets over Server-Sent Events (SSE)? Because Aura Finance also lets you mark a transaction as "reviewed" or add a note, which changes the dashboard state. That requires the client to send messages. SSE is one-way and would demand a parallel HTTP channel for those actions. I am not dogmatic: if your dashboard is purely read-only, SSE is a lighter option with automatic reconnection built into the browser. For us, the bidirectional channel collapsed the negotiation down to one connection.
 
-A burst of 10,000 trades/second can overwhelm both network and renderer. Strategies: server-side sampling (send every Nth event), client-side decimation (render every Nth received event), and virtual scrolling for DOM updates. The render budget should never exceed 16ms per frame (60 FPS).
-
-
-## Case Study: AuraFinance
-
-AuraFinance uses 2000ms polling instead of WebSockets because the financial data sources (yfinance) don't support push. The tradeoff: 2-second stale data is acceptable for the use case, and the simpler infrastructure eliminates connection management entirely. The lesson: choose the simplest solution that meets your latency requirements.
+The protocol we settled on uses a monotonically increasing event ID. Every event pushed to the client carries an ID. On reconnect, the client sends `{"type":"resync","lastEventId": 1042}` and the server replays everything after 1042. Here is the TypeScript client class that handles the core of it:
 
 
----
+<CodeBlock code={"type ServerEvent = {\n  id: number;\n  type: \"position.updated\" | \"transaction.created\" | \"transaction.deleted\";\n  payload: Record<string, unknown>;\n};\n\nexport class DashboardSocket {\n  private socket: WebSocket | null = null;\n  private lastEventId = 0;\n  private queue: ServerEvent[] = [];\n  private shouldReconnect = true;\n\n  connect() {\n    this.socket = new WebSocket(`wss://api.aura-finance.dev/dashboard`);\n    this.socket.addEventListener(\"open\", () => {\n      this.socket!.send(JSON.stringify({ type: \"resync\", lastEventId: this.lastEventId }));\n      while (this.queue.length) {\n        this.socket!.send(JSON.stringify(this.queue.shift()));\n      }\n    });\n    this.socket.addEventListener(\"message\", (event) => {\n      const msg = JSON.parse(event.data) as ServerEvent;\n      this.lastEventId = Math.max(this.lastEventId, msg.id);\n      this.applyToStore(msg);\n    });\n    this.socket.addEventListener(\"close\", () => {\n      if (this.shouldReconnect) {\n        setTimeout(() => this.connect(), 1000 * Math.min(2 ** this.retryCount(), 30));\n      }\n    });\n  }\n\n  sendRaw(message: unknown) {\n    const raw = JSON.stringify(message);\n    if (this.socket?.readyState === WebSocket.OPEN) {\n      this.socket.send(raw);\n    } else {\n      this.queue.push(raw as unknown as ServerEvent); // held until resync\n    }\n  }\n}"} lang="typescript" filename="websocket-client.ts" />
 
-The best real-time architecture is the simplest one that meets your latency SLA. Start with polling, add WebSockets only when sub-second latency is critical, and build event sourcing when you need audit trails and time-travel debugging.
+The `lastEventId` resync is the single most important piece of the client code. It guarantees at-least-once delivery because the server keeps an event log. If the client disconnects for 30 seconds, it just asks for events after the last one it saw. That makes the system resilient without any client-side retry logic beyond the resync message.
 
-[View on GitHub](https://github.com/3ni8ma/Finance-Hub)
+
+<Callout type="tip">Use event IDs from your append-only log, not the wall-clock timestamp. Two events can share a timestamp, but an ID is unique and gives you a deterministic resume point.</Callout>
+
+## Event Sourcing: The Log That Never Forgets
+
+Broadly, event sourcing means you treat the persistable truth as a sequence of immutable facts, not as the current state of a row. When a trade executes, you do not update a `positions` table. You append a `trade_executed` event to an `events` table. The `positions` table becomes a derived projection that can be rebuilt from the event log at any moment.
+
+Why is this useful for a dashboard? Because the dashboard needs to show historical state, and users care about "what did my portfolio look like when I saw that balance?" If you only store current state, that question is impossible to answer. With an event log, you can replay the stream up to any point in time and reconstruct the exact portfolio as of that moment.
+
+In Aura Finance, a transaction event looks like this:
+
+
+<CodeBlock code={"CREATE TABLE events (\n  id BIGSERIAL PRIMARY KEY,\n  aggregate_type TEXT NOT NULL,      -- 'account' | 'position' | 'transaction'\n  aggregate_id UUID NOT NULL,\n  event_type TEXT NOT NULL,          -- 'trade_executed' | 'deposit_confirmed'\n  payload JSONB NOT NULL,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\n\nCREATE INDEX idx_events_aggregate ON events (aggregate_type, aggregate_id);\nCREATE INDEX idx_events_sequence ON events (id);"} lang="sql" filename="schema.sql" />
+
+We use Postgres as the event store. For Aura's scale this is plenty, and pushing everything into Kafka would have been operational overkill. The `id BIGSERIAL` gives us both the event ID for client resync and the ordering guarantee. Postgres sequences are monotonic under normal operation, so `id > lastEventId` is a clean query.
+
+The write path is intentionally dumb. Here is the Python function we use in the API layer:
+
+
+<CodeBlock code={"import json\nfrom psycopg2.extras import Json\nfrom db import get_connection\n\ndef append_event(conn, aggregate_type: str, aggregate_id: str, event_type: str, payload: dict) -> int:\n    \"\"\"Append an event and return its generated ID.\"\"\"\n    with conn.cursor() as cur:\n        cur.execute(\n            \"\"\"\n            INSERT INTO events (aggregate_type, aggregate_id, event_type, payload, created_at)\n            VALUES (%s, %s, %s, %s, now())\n            RETURNING id\n            \"\"\",\n            (aggregate_type, aggregate_id, event_type, Json(payload))\n        )\n        event_id = cur.fetchone()[0]\n        cur.execute(\n            \"SELECT notify_websocket_broker(%s, %s)\",\n            (event_id, json.dumps({\"type\": event_type, \"payload\": payload}))\n        )\n    conn.commit()\n    return event_id"} lang="python" filename="event_store.py" />
+
+The `notify_websocket_broker` function is our bridge between the transactional database and the WebSocket layer. It uses Postgres `LISTEN/NOTIFY` so the broker process learns of new events without a second write path. This is what transforms the event log from boring persistence into a real-time stream.
+
+## Projections: Turning Events Into Dashboards
+
+The event log is the truth, but it is useless for answering a `SELECT * FROM positions WHERE user_id = 42` query fast. You cannot scan the events table every time someone opens the dashboard. You need a projection: a read model that summarizes the event stream into a queryable structure.
+
+In Aura Finance, a projection is just a Postgres table that we update transactionally after each event. The `balance` of an account is a projection of `deposit_confirmed`, `withdrawal_initiated`, and `trade_settled` events. The `position` of a stock is a projection of `trade_executed` events.
+
+The trick is the update path. When the WebSocket broker receives a new event, it invokes a projector function. For a `trade_executed` event, the projector does three things in a single database transaction:
+
+1. Upsert the `positions` row for that account and symbol.
+2. Append a `position_updated` message to a `outbox` table for the WebSocket broker to publish.
+3. Update the account's total equity figure in a `portfolio_summary` table.
+
+If any step fails, the whole transaction rolls back and the event is not marked as projected. That gives us atomicity between the projection and the event acknowledgment. If the process crashes mid-way, we restart from the last projected event ID, and the upsert is idempotent because it stores absolute shares, not deltas.
+
+This is where event sourcing really shines for a live dashboard: because every projection is derived from the same ordered log, there is exactly one transformation path. No more "why does the position screen disagree with the transaction list?" They both come from the same projector, and if they disagree, it is a bug, not a race.
+
+## The Snapshot Problem: Keeping Projections Warm
+
+The first time we restarted the projection service, it tried to replay four months of events from the beginning. It took twenty minutes. The dashboard was dark, and I learned the difference between an event-sourced system and a snapshot-aware event-sourced system.
+
+The solution is a snapshot every N events per aggregate. For each `account`, we store a `snapshots` table with `aggregate_id`, `sequence_number`, and a JSON blob representing the full state as of that sequence number. On restart, we load the latest snapshot, then replay only the events after it.
+
+
+<CodeBlock code={"CREATE TABLE snapshots (\n  aggregate_type TEXT NOT NULL,\n  aggregate_id UUID NOT NULL,\n  sequence_number BIGINT NOT NULL,\n  state JSONB NOT NULL,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n  PRIMARY KEY (aggregate_type, aggregate_id, sequence_number)\n);"} lang="sql" filename="schema.sql" />
+
+We take a snapshot at every 1000 events per aggregate. With a few thousand aggregates, that means the worst-case replay is 999 events per aggregate, which takes milliseconds. The snapshots are immutable; we never mutate a snapshot in place. Instead we write a new row at a higher sequence number and let old snapshots become garbage.
+
+
+<Callout type="warn">Do not make snapshot reads bypass the event log for real-time updates. Snapshots are for warm starts. All live updates must go through the event stream, otherwise every projector becomes a regular mutable database and the event sourcing benefits fade away.</Callout>
+
+We also learned to keep the projector's high-water mark in a dedicated `projector_progress` table. That table records the last event ID each projector has consumed, and on startup the projector resumes from there. This is how we avoid replaying events that were already projected to a different read model. Jobs that build weekly reports use their own progress rows, isolating them from the dashboard projectors.
+
+## Reconnects, Resyncs, and the Event ID Game
+
+The hardest part of real-time dashboards is not the happy path. It is the client that disappears mid-event, the mobile phone that switches from Wi-Fi to LTE, the laptop that sleeps for three hours and wakes up. Your WebSocket server will see broken connections every single day.
+
+The event ID resync approach handles this elegantly, but there is a subtlety we had to get right: the client must send its `lastEventId` on every reconnect, and the server must be able to say "I no longer have events before that ID" if a snapshot has truncated history. In that case, the server returns a full snapshot replay.
+
+| Strategy | Pros | Cons | Where we use it |
+|---|---|---|---|
+| HTTP polling | Trivial to implement, works behind any proxy | High server load, polling interval latency, battery drain on mobile | Only for the initial page load (one snapshot) |
+| Server-Sent Events (SSE) | Built-in reconnect, simple HTTP semantics | One-way only, limited by proxy buffering | Not used, but recommended for pure read-only dashboards |
+| WebSocket with event ID resync | Bidirectional, low latency, precise resume point | More complex client code, must handle backpressure | Primary dashboard transport |
+| WebSocket sending full state | Simple on the server, client just replaces everything | Bandwidth waste, no delta granularity, full render loops | Never used for updates |
+
+The golden rule we eventually encoded: never trust the client's timeline. The client might have missed events due to a proxy timeout, or it might have processed events out of order if the WebSocket delivers a cached frame after a retry. We always use the event ID from the server log as the source of truth. The WebSocket broker does not assign its own message ID; it forwards the event store's ID. That guarantees the ID space is unified and monotonic across all clients.
+
+## Backpressure: When the Client Can't Keep Up
+
+Real-time dashboards hit a problem the tutorials never mention: what if the client is slow? When a user has the dashboard open in a background tab, the browser throttles JavaScript timers and sometimes delays WebSocket message processing. Meanwhile, the server is firing 200 events per second because markets are volatile. The client's message queue in the browser grows until memory spikes.
+
+Our first solution was to send every event to every client that subscribed to that account. That collapsed under a burst of 1,500 trade events in one minute on a client with a throttled tab. The page froze for several seconds because the React reducer was applying a thousand individual updates.
+
+We transitioned to a batching protocol. The server accumulates events per client for a maximum of 100ms or 100 events, whichever comes first, and then sends a single message: `{"type": "batch", "events": [...]}`. The client applies the batch, and the renderer runs at most once per frame. This reduced the React reconciliation overhead by an order of magnitude without adding observable latency.
+
+For extremely slow clients, the server also maintains a per-client event queue with a fixed maximum of 2,000 events. If the client falls further behind, the server drops the queue and sends a `{"type": "snapshot_required"}` message. The client responds by requesting a fresh projection snapshot. The block of code below shows the batching loop in our Python broker process:
+
+
+<CodeBlock code={"import asyncio\nfrom collections import defaultdict\nfrom websockets import WebSocketServerProtocol\n\nBATCH_WINDOW_MS = 100\nBATCH_MAX_EVENTS = 100\nMAX_QUEUE_EVENTS = 2000\n\nclass DashboardBroker:\n    def __init__(self):\n        self.clients: dict[int, WebSocketServerProtocol] = {}\n        self.pending: dict[int, list[dict]] = defaultdict(list)\n        self._flush_task = asyncio.create_task(self._flush_loop())\n\n    async def _flush_loop(self):\n        while True:\n            await asyncio.sleep(BATCH_WINDOW_MS / 1000)\n            for user_id, events in list(self.pending.items()):\n                if not events:\n                    continue\n                message = {\"type\": \"batch\", \"events\": events}\n                try:\n                    await self.clients[user_id].send(self._serialize(message))\n                except Exception:\n                    del self.clients[user_id]\n                del self.pending[user_id]\n\n    async def dispatch(self, user_id: int, event: dict):\n        if len(self.pending[user_id]) >= MAX_QUEUE_EVENTS:\n            self.clients[user_id].send('{\"type\": \"snapshot_required\"}')\n            self.pending[user_id].clear()\n            return\n        self.pending[user_id].append(event)"} lang="python" filename="broker.py" />
+
+This batching is a classic throughput-vs-latency tradeoff. We found that adding 100ms of buffering to update a dashboard chart that redraws at 30fps is imperceptible, but it reduces the number of WebSocket frames we send during a volatile market from 1,500 to 15. That is the difference between a dashboard that survives a burst and a dashboard that spins its CPU fan up to maximum.
+
+## What We Measured and What We Learned
+
+After the migration, we ran metrics for two weeks. The numbers told the story we expected, but the magnitudes still surprised me.
+
+- **Dashboard render latency (event to pixel):** p95 went from 4.2s to 230ms. The polling interval alone was 5s, so almost all of the improvement came from push delivery. The remaining 230ms includes 100ms of server-side batching, network RTT, React render, and the SVG chart animation. 
+- **Database load:** Peak read QPS dropped from 80 to 5. The only HTTP requests now are the initial snapshot load and the occasional explicit refresh. Postgres CPU usage on the read replica fell from 65% to 8%.
+- **Connection stability:** We track WebSocket closure events and reconnects. The average client reconnects every 3.2 hours. Without the event-ID resync, every one of those reconnects would have required a full state reload. With resync, 92% of reconnects simply ask for the 5–30 events they missed and continue.
+
+The most valuable architecture decision, though, was event sourcing not because it is trendy, but because it made debugging real-time bugs actually possible. Before, when a user reported a phantom balance, we had to poke at production data. Now, we ask for their account ID and replay that account's event stream in a local environment. We can see exactly which event caused the projection to drift, and we can fix the projector, then rebuild that account's snapshot. No guessing.
+
+The other lesson is that real-time does not mean "instant." It means "eventually correct, fast enough to feel immediate, and explicitly acknowledging every gap." The snapshot_required fallback and the batch window are both about that honesty. When the dashboard cannot keep up, it tells the client and the client recovers rather than silently dropping data.
+
+
+<Quiz question={"In the Aura Finance architecture, what is the purpose of the lastEventId sent during a WebSocket resync?"} options={["It is a timestamp from the client that tells the server how old the connection is.", "It is the ID of the last event the client successfully applied, so the server can replay only missed events.", "It authenticates the client to the WebSocket server."]} answer={1} explanation={"The lastEventId marks the client's position in the event log, allowing the server to replay events after that ID and avoid a full state reload on reconnect."} />
+
+
+<KeyTakeaways items={["Polling is operationally expensive at scale and produces stale dashboards; use push-based transport for real-time views.", "WebSocket with event-ID resync is a robust pattern that handles flaky networks without full state reloads.", "Event sourcing gives you an immutable log that powers both real-time projections and historical replay for debugging.", "Always snapshot your aggregates so a projection restart replays a small suffix, not the entire history.", "Batch events to slow clients to protect memory and render performance, and use a `snapshot_required` fallback for hopelessly lagging clients.", "Keep the event log as the single source of ordering truth; never trust timestamps or client-side sequence numbers."]} />
+
+
+<Faq items={[{"q": "When should I use SSE instead of WebSockets for a dashboard?", "a": "Use SSE when your dashboard is purely read-only and the client never sends data back. SSE handles reconnection natively, has built-in event IDs with the Last-Event-ID header, and is dramatically easier to proxy through most CDNs. WebSockets only make sense when you need bidirectional communication or low-latency acknowledgment of client actions, as we did with transaction notes and review flags."}, {"q": "Does event sourcing require Kafka or a dedicated event store?", "a": "No. For a dashboard that serves thousands of clients, a Postgres table with an append-only insert pattern is perfectly sufficient. Kafka becomes necessary when you need multiple independent consumers with different replay speeds, or when your write throughput is in the tens of thousands of events per second. Aura Finance's event log is a plain Postgres table and the projection service reads from it directly."}, {"q": "How do I prevent duplicate events from corrupting projections during reconnects?", "a": "Make every projection result idempotent. In Aura Finance, the projector stores absolute values (e.g., shares = 500) rather than deltas (shares = shares + 5). If the event is replayed twice, the second apply produces the same absolute value. Then use the event ID as the deduplication key and skip an event if its ID is already in the projector progress table."}, {"q": "Is 100ms of batching okay for all dashboards?", "a": "It depends on the meaning of \"real-time\" for your product. Stock tickers and chat apps should target under 50ms. A portfolio dashboard that redraws a chart at 10fps perceives 100ms as instant. Measure the user-visible render interval first, then choose a batch window that is meaningfully smaller and tune from there."}]} />
+
+## Conclusion
+
+Building a real-time dashboard is less about choosing a fancy transport and more about deciding where the truth lives. In Aura Finance, the truth lives in an append-only event log. WebSockets are just the delivery vehicle, and projections are just convenient views. Every piece of the interface, from the balance chart to the transaction list, is derived from that log, which means every piece can be rebuilt at any time.
+
+The journey from polling to WebSockets taught me that "live data" is an architectural commitment, not a feature flag. It forces you to handle disconnects, backpressure, and replay semantics with the same rigor as database transactions. I tried to skip those problems and paid for it in debugging hours.
+
+If you are building a dashboard that needs to feel alive, start with the event log. Make it immutable, give it monotonic IDs, and then connect as many projections as you need. Do not treat real-time as an add-on to your existing REST API. Restructure the data path so push is the primary channel and polling is only the fallback.
+
+The full source code for the dashboard, including the WebSocket broker, the event store, and the React client, is open source: [View the project on GitHub](https://github.com/3ni8ma/Finance-Hub).

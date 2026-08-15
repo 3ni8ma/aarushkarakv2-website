@@ -2,44 +2,160 @@ export const title = "Software Architecture for Solo Developers"
 export const date = "August 11, 2026"
 export const tags = ["Architecture", "Solo Dev", "Software Design", "Monolith"]
 export const repo = "https://github.com/3ni8ma/3ni8ma"
+export const difficulty = "Intermediate"
+export const generated = "v2"
 
-## The Modular Monolith
+import { Callout, CodeBlock, Faq, KeyTakeaways, Quiz } from "@/components/mdx"
 
-Building maintainable systems alone requires different tradeoffs than team development. This post covers modular monoliths, decision logs, architectural fitness functions, and when to accept tech debt as a solo founder.
+When I greenfielded 3ni8ma — leetspeak for "enigma" — I had a microservices architecture in mind before I had a feature list. I sketched an auth service, a puzzle service, a scoring service, and an event bus to glue them together. Then I spent two months building plumbing and zero puzzles. The repo was a showcase of infrastructure with nothing to show for it. I was the entire engineering team, and my architecture was designed for a team of fifteen.
+
+That was the first lesson: as a solo developer, every architectural choice is a bet against your own future time. The cost of each service, abstraction, or queue is paid in the hours you spend re-reading old code and re-tracing data paths six months later. I rebuilt 3ni8ma's backend twice before it stuck. It is now a deliberately boring monolith, and this article is the reasoning behind that design: the concrete decisions, the code, and the tradeoffs I measured instead of guessed.
+
+## The Ownership Revolution
+
+"Ownership" in a solo project is not a badge, it is a sentence. You own every line forever. There is no junior dev to hand the confusing stuff to, no reviewer to catch the half-baked abstraction, no on-call rotation to share the 2am page. When the team is one, the bus factor is one, and the only thing that saves you from your own absence is how little context you need to rebuild.
+
+My original 3ni8ma backend had three services, a message broker, and a shared schema package. I counted once: roughly 70% of the code was HTTP glue, serialization, and event schemas. The actual puzzle logic — the reason the project exists — was about 1,200 lines out of 6,000. Every bug fix required tracing a request through three containers and mentally replaying two JSON transforms. The services weren't an architecture, they were a tax on my attention.
+
+The hard-won lesson: the solo developer's goal is not raw performance or scalability. It is *survivability* — the ability to wake up in six months, read the code cold, and ship a fix before coffee wears off. Every abstraction you add is debt you pay in context-switching. The measure of a solo architecture is not how clean the diagram looks, but how many decisions your future self has to hold in their head at once.
+
+## Why a Monolith Is the Solo Developer's Best Friend
+
+A monolith is one process that does all the things. Not a single file — that is a different failure mode — but a single deployable unit with a single entry point, a single log stream, and a single database. For 3ni8ma, the numbers were decisive.
+
+Before the rewrite, deploying meant building three Docker images, pushing them, and running a multi-container compose restart: four to six minutes of my afternoon, plus watching orchestration logs to make sure the order was right. After the rewrite, deploying means building one image and restarting one container: about forty seconds of build time and three seconds of downtime. When I fix a bug, the path to production is one command and one tail of a log.
+
+| Approach | Deploy time (avg) | Ops burden | Time to first bug fix | Scaling ceiling |
+|---|---|---|---|---|
+| Single script | ~1s | Near zero | Minutes | Hits a wall fast |
+| Modular monolith | ~40s | Low (one container) | 5–10 min | Thousands of users on one box |
+| Microservices | 4–6 min | High (many containers) | 30+ min | Very high, but you pay daily |
+
+People hear "monolith" and imagine a decade-old PHP application with 40,000 lines of mixed HTML and SQL. That is a *distributed monolith's opposite*: it is a big ball of mud, and the cure for mud is modules, not microservices.
+
+## The Modular Monolith Pattern
+
+A monolith only stays sane if its internals are disciplined. The pattern I arrived at is the modular monolith: every domain owns a directory, a public interface, and its own tables. Modules never import each other's internals; they are wired together in exactly one place — the application factory.
+
+3ni8ma's domains are small: `accounts`, `puzzles`, `submissions`, `leaderboard`. Each one is a FastAPI router plus a service layer plus its own set of database tables. The whole application is assembled in one file:
 
 
-## The Modular Monolith
+<CodeBlock code={"from fastapi import FastAPI\n\nfrom app.modules.accounts import router as accounts_router\nfrom app.modules.leaderboard import router as leaderboard_router\nfrom app.modules.puzzles import router as puzzles_router\nfrom app.modules.submissions import router as submissions_router\n\n\ndef create_app() -> FastAPI:\n    \"\"\"Assemble the monolith from its domain modules.\"\"\"\n    app = FastAPI(title=\"3ni8ma\", version=\"1.0.0\")\n\n    app.include_router(accounts_router, prefix=\"/api/v1\")\n    app.include_router(puzzles_router, prefix=\"/api/v1\")\n    app.include_router(submissions_router, prefix=\"/api/v1\")\n    app.include_router(leaderboard_router, prefix=\"/api/v1\")\n\n    @app.get(\"/healthz\")\n    def health() -> dict[str, str]:\n        return {\"status\": \"ok\"}\n\n    return app"} lang="python" filename="app/main.py" />
 
-Microservices require DevOps overhead, network debugging, distributed tracing, and team coordination — all costs a solo dev shouldn't pay. A modular monolith divides code into bounded contexts (packages/modules) with strict internal APIs, keeping deployment simplicity while enforcing architectural boundaries. Extract to services only when scaling forces it.
+### The one rule that keeps it honest
 
-
-## Architecture Decision Records
-
-ADRs document every significant architectural choice: context, decision, consequences. A one-page ADR saves hours of rediscovering why you chose PostgreSQL over MongoDB, or why you went with polling over WebSockets. When you revisit a component months later, the ADR tells you the reasoning — and whether the constraints have changed.
+The single rule: *a module may only be wired into the rest of the app at the factory*. No importing `app.modules.submissions.models` from `app.modules.leaderboard.services`. If `leaderboard` needs submission data, it calls the submissions module's public service function. This is the same discipline that makes microservices decoupled, minus the network.
 
 
-## Fitness Functions
+<Callout type="tip">Enforce the boundary with automation. A five-line script that scans imports and fails the build on cross-module internal imports is cheaper than your willpower and catches violations when you are tired at 11pm.</Callout>
 
-Automated guards that protect architectural decisions: circular dependency checks, package-level API surface tracking, database query analysis (no N+1), and response time budgets. CI running these checks catches regressions that a solo dev would miss until deployment. Examples: forbid direct database access from controller modules, enforce max 200 lines per file.
+The "big ball of mud" happens not because you lack services, but because you lack boundaries. The modular monolith gives you boundaries without the operational overhead of a second process.
 
+## Data First: The Database as Contract
 
-## Strategic vs Tactical Tech Debt
-
-Tactical tech debt (quick fix now, clean later) is necessary for solo devs with limited time. Strategic tech debt (architectural shortcuts that compound) must be avoided. The distinction: can the shortcut be fixed in 30 minutes without rewriting surrounding code? If yes, tactical. If it affects the entire module's interface, strategic.
-
-
-## Testing Without a QA Team
-
-Integration tests beat unit tests for solo projects — they cover real user workflows and catch more bugs per test written. The testing pyramid for solo devs: 60% integration (API routes, DB queries), 30% unit (core business logic, complex calculations), 10% E2E (critical user paths). Prioritize tests that would wake you up at 3 AM if they broke.
+In a monolith with one database, the schema is the architecture diagram. When the `puzzles` table changes shape, every downstream consumer sees it through migrations and foreign keys before they see it through code. I write the schema first, then the code that speaks to it.
 
 
-## Documentation That Stays Fresh
+<CodeBlock code={"CREATE TABLE puzzles (\n    id           TEXT PRIMARY KEY,\n    puzzle_type  TEXT NOT NULL CHECK (puzzle_type IN ('cipher', 'crossword', 'logic')),\n    puzzle_data  JSONB NOT NULL,\n    answer_hash  TEXT NOT NULL,        -- never store plaintext answers\n    difficulty   INTEGER NOT NULL CHECK (difficulty BETWEEN 1 AND 5),\n    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()\n);\n\nCREATE TABLE submissions (\n    id           TEXT PRIMARY KEY,\n    puzzle_id    TEXT NOT NULL REFERENCES puzzles(id) ON DELETE CASCADE,\n    user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n    is_correct   BOOLEAN NOT NULL,\n    submitted_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\n\nCREATE INDEX idx_submissions_puzzle ON submissions(puzzle_id, is_correct);"} lang="sql" filename="db/migrations/001_initial.sql" />
 
-Code comments rot. READMEs become fiction. The only documentation that stays accurate: the code itself (readable with good naming), integration tests (show how components connect), and ADRs (why decisions were made). Everything else — docstrings, inline comments explaining the obvious — is noise.
+Every constraint here caught a real bug at least once. The `difficulty` CHECK rejected a puzzle generator that once emitted difficulty 6. The `puzzle_type` CHECK kept the same generator from persisting an unhandled variant. The foreign key on `submissions.puzzle_id` prevents orphaned rows when I delete test puzzles. Constraints catch what tests miss because they run on every write, including the ones you forget to cover.
+
+I also chose `answer_hash` over a plaintext `answer` column deliberately: the client sends an answer, the server hashes it with a per-puzzle salt, and only the hash is stored. If the database leaks, the puzzles are still hard to cheat — and the worst-case is nobody. The schema is the contract between the puzzle generator and the submission checker, and it cannot drift out of sync because it is one database.
+
+During development I run SQLite with the same migrations; in production it is Postgres. The app never touches database-specific features, so the same code and same migrations run on both. That means my laptop is a fully functional replica of production, and "works on my machine" is actually true.
+
+## API Boundaries and the Single Entry Point
+
+One process means one API boundary. Everything sits behind a single FastAPI app, and the only thing a client talks to is `/api/v1`. Authentication middleware is written once and applies to every route. Rate limiting is one dependency, not three configurations. Request logging is one middleware, not per-service decorators sprinkled across a codebase.
+
+This is the quiet superpower of the monolith: there is no service-to-service authentication to design, no internal API tokens to rotate, no team arguing about which service is allowed to call which other service. A solo project with three services has three auth boundaries to get wrong. My monolith has one.
+
+Versioning is trivial because it is just a URL prefix. `v1` stays frozen while I break things in `v2` behind the scenes. The day I need to change a response shape, I add `v2` routes in the same router and let the old ones rot until no client uses them. There is no microservice version matrix to track.
+
+The one cost: every route is in one codebase, so a noisy module can distract you. The mitigation is the module boundary from the previous section — `puzzles` and `accounts` have separate routers, separate services, separate directories. They share a process, not a brain.
+
+## Background Jobs and the Queue
+
+Generating a cipher puzzle is instant. Generating a custom crossword is not — it is 4 to 6 seconds of CPU-bound constraint solving. I refuse to burn that in a request path, so 3ni8ma has exactly one background worker and one Redis queue. The HTTP API enqueues a generation job and returns `202 Accepted`; the worker does the heavy math and writes the puzzle to the database.
+
+The queue is not a scalability play. There is one worker process. The queue exists purely to keep request latency under 300ms and to absorb the spiky cost of crossword generation. If I ever need to generate ten puzzles at once, the worker does them serially and that is fine.
+
+Because RQ (like most queues) is at-least-once, a job can run twice if the worker crashes mid-task. Every job must be idempotent. The generation job starts by checking: *does a puzzle with this seed already exist?* If yes, it returns the existing row instead of generating a duplicate. This one check has saved me from duplicate-puzzle bugs at least three times, every one caused by manual re-queueing during debugging.
 
 
----
+<Callout type="warn">Never auto-retry a failing job forever. My crossword generator once hit an infinite retry loop on a malformed clue list, and Redis dutifully churned CPU for an hour. Add a max retry count and log the failures.</Callout>
 
-Solo development architecture is about maximizing impact per unit of complexity. Modular monoliths, ADRs, and strategic testing practices let one person build and maintain systems that would otherwise require a team.
+The rule I apply: a task goes in the queue only if it takes longer than I am willing to wait, or if it needs to run on a schedule (like the daily puzzle). Everything else stays synchronous. Every queue you add is another moving part, and a solo developer should count moving parts like they cost money — because they cost time.
 
-[View on GitHub](https://github.com/3ni8ma/3ni8ma)
+## Testing Strategy for a One-Person Team
+
+I gave up on extensive unit tests for internal service methods. They tested an implementation detail I would rewrite anyway, and they gave me false confidence. What I kept is integration tests that boot the entire app against a disposable database and hit it over HTTP.
+
+
+<CodeBlock code={"import pytest\nfrom fastapi.testclient import TestClient\n\nfrom app.main import create_app\n\n\n@pytest.fixture()\ndef client() -> TestClient:\n    \"\"\"Each test exercises the real API stack against a fresh database.\"\"\"\n    app = create_app()\n    with TestClient(app) as c:\n        yield c\n\n\ndef test_submit_correct_answer(client: TestClient) -> None:\n    puzzle = client.post(\"/api/v1/puzzles\", json={\"puzzle_type\": \"cipher\"}).json()\n    answer = \"ENIGMA\"\n    response = client.post(\n        f\"/api/v1/puzzles/{puzzle['id']}/submissions\",\n        json={\"answer\": answer},\n    )\n    assert response.status_code == 200\n    assert response.json()[\"is_correct\"] is True"} lang="python" filename="tests/conftest.py" />
+
+Why this works: the test goes through the router, the middleware, the auth layer, the service, and the database — the same path a real request takes. A bug in any of those layers fails the test. Unit tests mock away the layers where bugs actually live.
+
+For puzzle answers, I use snapshot testing. The `answer_hash` column makes it trivial: the test generates a puzzle with a fixed seed and compares the stored hash against a golden snapshot. If the generator changes, the hash changes, and the test tells me exactly that one puzzle whose answer shifted. The table I use for deciding what to write:
+
+| Approach | Catches | Cost per test | Worth it solo? |
+|---|---|---|---|
+| Unit tests on internals | Logic errors in isolated functions | Low | Rarely — you'll rewrite the internals |
+| Integration tests on API | Wiring, auth, validation, DB | Medium | Yes — this is the safety net |
+| End-to-end browser tests | UI regressions | High | Only for the 3 pages users actually touch |
+
+The integration suite runs in under 30 seconds. I run it before every push. That is the entire CI story.
+
+## Deployment Without the DevOps Burden
+
+The deployment is a $5 VPS, Docker Compose, and one shell script. There is no Kubernetes, no Terraform, no observability stack, no CI pipeline that builds artifacts I then deploy somewhere else. The entire process:
+
+
+<CodeBlock code={"git pull\ndocker compose up -d --build"} lang="bash" />
+
+That is it. One container image, one compose file, one server. The logs go to stdout, and `docker compose logs -f --tail=100` tells me everything about the health of the system.
+
+I deliberately skipped infrastructure-as-code. Terraform is another system to learn, another state file to babysit, another set of version constraints to watch. For five containers on one box, the abstraction costs more than the problem it solves. A backup script does more for my peace of mind than any provisioning framework:
+
+
+<CodeBlock code={"#!/usr/bin/env bash\nset -euo pipefail\n\nTIMESTAMP=\"$(date +%Y-%m-%d_%H%M%S)\"\nBACKUP_DIR=\"/var/backups/3ni8ma\"\nmkdir -p \"$BACKUP_DIR\"\n\ndocker exec 3ni8ma-db pg_dump -U enigma enigma \\\n  | gzip > \"$BACKUP_DIR/enigma_$TIMESTAMP.sql.gz\"\n\n# Keep 30 days of backups\nfind \"$BACKUP_DIR\" -name \"*.sql.gz\" -mtime +30 -delete\n\necho \"Backup written: $BACKUP_DIR/enigma_$TIMESTAMP.sql.gz\""} lang="bash" filename="scripts/backup.sh" />
+
+A cron job runs that script nightly, and I test the restore path quarterly by spinning up a throwaway container and loading the dump. A backup you have never restored is a rumor, not a backup.
+
+## The Instrumentation Trap
+
+For the first year, the only observability was structured JSON logs to stdout. No dashboards, no metrics server, no tracing. That was the right call, and it remains the right call. The trap I keep avoiding is installing Grafana and Prometheus because they are fun, not because I have a question they answer.
+
+My rule: add an instrument only when I can name the exact question it answers. The day a friend texted "is 3ni8ma down?", the question was "is the process alive?" — so I added a `/healthz` endpoint and an uptime check. The day a puzzle request crawled for five seconds, the question was "which query is slow?" — so I enabled slow-query logging, found a missing index on the leaderboard, added it, and moved on. No dashboard was built.
+
+The moment I feel the urge to draw a sparkline, I stop and ask what decision the sparkline would change. So far, the honest answer has always been "none." When that answer becomes "yes, I need to know if the worker queue is backing up," I will add a single metric for that, and not the other ninety Prometheus defaults.
+
+## When to Reconsider
+
+The monolith is not a religious position. There are real signals that it is straining, and I keep them written down so I notice them before the code forces me to:
+
+- **Build time over three minutes.** When the image build eats that much time, the problem is usually the build cache, not the architecture — but if splitting the build does not fix it, splitting the app might.
+- **Two modules with genuinely different scaling needs.** The puzzle generator is CPU-bound; the leaderboard is storage-bound. If the worker queue ever grows to thousands of jobs per minute, the worker deserves its own process. Not before.
+- **More than two people in the codebase.** Merge conflicts are a feature of parallel work, and a monolith serializes merges. The moment the team grows, the module boundaries I built become the seams for extraction.
+- **A compliance or security boundary.** If one module processes payments and another stores only guesses, they get their own deployment because the audit logs demand it.
+
+For each signal, the remedy is the strangler pattern: extract exactly that one module into its own process, leave the monolith intact, and stop there. A big-bang re-architecture is how solo projects die.
+
+
+<Quiz question={"What is the strongest reason for a solo developer to choose a modular monolith over microservices?"} options={["It scales horizontally without any code changes", "It reduces cognitive load while preserving clear domain boundaries", "It automatically parallelizes background job processing", "It eliminates the need for a database"]} answer={1} explanation={"A modular monolith keeps deployment simple while letting you uphold clear boundaries between domain modules, which is what a solo developer actually needs."} />
+
+
+<KeyTakeaways items={["Architecture for a solo developer is a personal discipline, not a diagram: optimize for the ability to re-read the code cold and ship a fix.", "Start with a modular monolith: one process, one database, one deployable unit, with strict boundaries between domain modules.", "Let the database be the contract between modules, with constraints that catch real bugs on every write.", "Add background jobs and instrumentation only when you can name the exact problem they solve; every moving part is a tax on your future attention.", "Reconsider the monolith only when you hit measurable signals: slow builds, divergent scaling needs, a growing team, or compliance boundaries."]} />
+
+
+<Faq items={[{"q": "Should I start with microservices \"to be safe\"?", "a": "No. The cost of microservices is paid daily \u2014 in deploy time, debugging, and context-switching \u2014 and the benefit arrives only when you have real scaling pressure or a real team. For a solo developer, that day rarely comes. Start with a modular monolith; the module boundaries are the seams you would split later, and they cost almost nothing to draw."}, {"q": "SQLite or Postgres for a solo project?", "a": "Start with SQLite if you want zero ops, but write migrations from day one and avoid database-specific features so you can switch later. I switched to Postgres when I wanted concurrent writers and a single server was already in place for the app. The migration was painless because the app never touched SQLite-specific SQL."}, {"q": "How do I keep module boundaries from eroding over time?", "a": "Automate it. A small script that scans imports and fails the build if leaderboard imports submissions.models is worth more than a hundred code review comments. Your willpower is strongest the day you write the rule and weakest the night before a deadline; the script does not care."}, {"q": "When should I add a queue?", "a": "When a request takes longer than you are willing to make a user wait (I use roughly 500ms as the ceiling), or when you have a periodic job. Not before. A queue adds a failure mode \u2014 at-least-once delivery, retries, stuck jobs \u2014 so it should earn its place by solving a latency problem you actually have."}]} />
+
+## Conclusion
+
+The architecture of a solo project is not a diagram you present in a meeting. It is a set of rules you negotiate with your future self, and the negotiation is explicit in the code. When I look at 3ni8ma now, I see a monolith that is boring on purpose: one process, one database, one queue, one log stream. Each of those *ones* is a decision I made after losing weeks to the alternatives.
+
+The deeper lesson is about trust. A solo developer has no one to blame and no one to catch mistakes, so the architecture has to be the guardrail. Module boundaries that are enforced by a script, constraints that are enforced by the database, tests that exercise the real HTTP stack — these are the silent reviewers of a one-person team. They do not get tired, and they do not miss the PR that never happened.
+
+If you take one thing from this article, let it be this: design for the size of the team you actually have, which is one. Start with a modular monolith, keep every moving part justified, and let the day you genuinely need a second service be the day you pay for that complexity — not the day you anticipate it.
+
+The full source of 3ni8ma, including the monolith, the migrations, and the deployment scripts, is public: [View the project on GitHub](https://github.com/3ni8ma/3ni8ma).

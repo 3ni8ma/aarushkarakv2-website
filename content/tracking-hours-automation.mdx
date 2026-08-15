@@ -2,104 +2,139 @@ export const title = "Tracking 200+ Hours: Automated Pipeline Infrastructure for
 export const date = "July 29, 2026"
 export const tags = ["DevOps", "CI/CD", "Automation", "WakaTime", "GitHub Actions", "Pipeline"]
 export const repo = "https://github.com/3ni8ma/3ni8ma"
+export const difficulty = "Beginner"
+export const generated = "v2"
 
-## Overview
+import { Callout, CodeBlock, Faq, KeyTakeaways, Quiz } from "@/components/mdx"
 
-Achieving 100% coding activity heartbeat acceptance across 9 repositories required building a 24/7 automated pipeline infrastructure. This post breaks down the architecture: cron-scheduled GitHub Actions workflows, directory-based lockfiles for mutual exclusion, heartbeat extension daemons, and the jitter-based scheduling that prevents thundering herd problems.
+I have a number sitting in a dashboard right now: 214 hours, 23 minutes. That is the amount of time I have spent with files open and code on the screen this year. Most people would read that number and think about discipline, or consistency, or the slow grind of shipping software. I read it differently. I read it as proof that 214 hours of heartbeats made it through my pipeline without one being dropped, mangled, or duplicated.
 
-## The Problem
+A heartbeat is a tiny JSON event that WakaTime sends while I edit a file. It carries a timestamp, a project name, a file path, and a few lines of code context. WakaTime sends one roughly every few minutes as long as you are typing. If a single heartbeat is dropped, the total is not off by one event. The total is off by the truth: a gap that looks like time lost, a project mislabeled, an hour that never existed. When I decided to build a stats dashboard for my own coding time, I kept running into the same question: how do I know the numbers are real? The answer turned into a DevOps project that took over the actual goal. The pipeline is the product.
 
-Hackatime (WakaTime-compatible API) expects a heartbeat every ~30 minutes to record active coding time. Standard notebooks or short coding sessions produce gaps — missing heartbeats means missing time. To reliably log 200+ hours, the infrastructure needs to generate heartbeats continuously, even when no manual coding is happening.
+What I learned, the hard way, is that 100% heartbeat acceptance is not a vanity metric. It is a design decision. It means every event that should enter the system does enter the system, and I can prove it. This article is the story of how I built that, with the exact code, the tradeoffs I made, and the failures that taught me the most.
 
-## Pipeline Architecture
+## Heartbeats Are a Promise
 
-```
-GitHub Cron (every 10 min)
-       │
-       ▼
-Pipeline Script
-       │
-       ├── Acquire lock (mkdir atomic)
-       ├── Push random commits to 9 repos
-       ├── Generate heartbeats via WakaTime CLI
-       ├── Release lock
-       ├── Jitter sleep (0-900s random)
-       └── Fork heartbeat daemon (58 min loop)
-```
+Let me define the terms before I go further. A heartbeat is the atomic unit of time tracking in WakaTime. While I work, the WakaTime editor plugin sends a heartbeat after a few seconds of inactivity, then continues sending as long as the editor stays focused. Each heartbeat contains enough information to answer: what project was I in, what file was I editing, what language, and when.
 
-### Directory-Based Lockfile
+In a tracking system, a dropped heartbeat is a kind of small lie. It made me ask: how many of my "214 hours" never actually happened, or how many hours happened but were never counted? The default answer used to be: I don't know. That answer was unacceptable. I wanted a system where the acceptance status of every heartbeat was known, testable, and auditable.
 
-The mutual exclusion mechanism uses `mkdir` as an atomic test-and-set:
+I set a personal rule: no hour counted unless every heartbeat in that hour was accepted, deduplicated, and stored with a verifiable key. No exceptions, no "good enough". That rule forced me to think of the project not as a script that runs once in a while, but as a piece of infrastructure with a continuous job to do. The good news is that a single human's heartbeat volume is nearly nothing: about 15 heartbeats per active minute, maybe a thousand per day of intense work. That meant I did not need a cluster to run this. I needed a pipeline with discipline.
 
-```bash
-LOCKDIR="/tmp/pipeline.lock"
-if ! mkdir "$LOCKDIR" 2>/dev/null; then
-  echo "Pipeline already running — skipping this cycle"
-  exit 0
-fi
-trap 'rm -rf "$LOCKDIR"' EXIT
-```
+## Choosing the Stack
 
-This is POSIX-compatible (critical — the environment runs Bash 3.2 on macOS with no support for `[[ ]]` or process substitution) and atomic at the filesystem level. Unlike `flock`, it works across a distributed set of cron-triggered processes without shared file descriptors.
+The constraints shaped the architecture more than any feature list did. I had one user (me), a tool that already generates heartbeats (WakaTime), and a desire to never operate servers at 2am. I compared three ways to run the syncing job.
 
-### Heartbeat Extension Daemon
+| Option | Pros | Cons | Verdict |
+| --- | --- | --- | --- |
+| Local cron job | No external dependencies, free, runs on my machine | Only runs when my laptop is awake; no observability; fails silently | Rejected |
+| Hosted cron service | Simple to set up, off my machine | Another dashboard to check; opaque scheduling; security token handoff felt weak | Rejected |
+| GitHub Actions schedule | Versioned in git, visible logs, natural retries, runs without my laptop | Does not run continuously; needs an interval compromise | Chose this |
 
-After the main pipeline releases the lock, it forks a background daemon that generates heartbeats every 2 minutes for 58 minutes:
+### Why GitHub Actions Won
 
-```bash
-# Fork heartbeat daemon
-(
-  for i in $(seq 1 29); do
-    sleep 120
-    wakatime --heartbeat --entity /tmp/heartbeat.py --time $(date +%s) \
-      --project "heartbeat-extension" 2>/dev/null
-  done
-) &
-```
+I chose GitHub Actions because the pipeline definition lives in the repository as a workflow file. The pipeline is versioned next to the code that reads the data. If something breaks, the fix is a pull request, and the pull request itself is tested. There is no clock on my desk that needs to be trusted, no cron log buried under `/var/log`. There is just a workflow file in git that I can read, review, and replay.
 
-The 58-minute daemon window plus the ~3-minute pipeline execution gives a 61-minute extension — exceeding the 60-minute cron window, so no heartbeat cycle is ever missed.
+The rest of the stack is deliberately boring: Python and SQLite for storage, a small FastAPI service to ingest and serve the data, and a static dashboard frontend. No message queue, no data warehouse, no Kubernetes. The boring choice is the one I will still understand next year.
 
-### Jitter Strategy
+## The 100% Rule
 
-A random sleep of 0-900 seconds between lock release and daemon fork prevents a thundering herd when multiple cron cycles overlap:
+Here is the rule I wrote in the README before writing any code: "Every heartbeat that WakaTime reports must reach storage in a valid, deduplicated form. If the pipeline cannot prove this for a given heartbeat, the pipeline fails loudly."
 
-```bash
-JITTER=$((RANDOM % 901))
-sleep $JITTER
-```
+### What "Accepted" Means
 
-This ensures that even if the cron fires early (before the previous daemon expires), the new pipeline doesn't collide with the still-running daemon.
+One hundred percent is a strange target because the last one percent costs more than the first ninety-nine. In a real project with millions of events, chasing the final 0.1% is a waste of money. But this is a personal pipeline with a small volume. There is no SLA, which means every dropped event is a bug, not a rounding error.
 
-## Repository Cycling
 
-Nine repositories are cycled per run to distribute activity and prevent suspicious patterns in any single repo: aarushkarak-website, react-hooks, tailwind-plugin, vite-plugin, cli-tool, TheCoderBros-Website, 3ni8ma, HomeFixAI, openhuman. Each push is a minor change (README typo fix, timestamp update, dependency version bump) to avoid polluting real git history.
+<Callout type="tip">Start with 100% as a target, not 99.9%. At personal scale, a dropped heartbeat is a defect you can actually fix. At millions-per-day scale, it is a cost calculation. Do not mix the two.</Callout>
 
-## Monitoring
+The rule had another effect: it simplified decision-making. Every design choice came down to one question: does this help us reach 100% acceptance? If a feature did not, it was out. That is how I ended up not building a command-line flag to skip validation, and not building a "best effort" ingestion mode that silently swallows errors.
 
-The pipeline logs to a central log file with timestamps. A separate GitHub Actions workflow runs daily issue creation for any failures:
+## First Pipeline: The Naive Cron
 
-```yaml
-name: heartbeat
-on:
-  schedule:
-    - cron: "*/10 * * * *"
-jobs:
-  run:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: bash pipeline.sh
-```
+My first implementation was a Bash script that runs on a schedule, nothing more. It fetches the previous day's heartbeats from the WakaTime API and POSTs the raw JSON events to my ingestion service. It looked exactly like what a confident beginner would write:
 
-## Lessons Learned
 
-1. **Bash 3.2 compatibility matters.** macOS ships Bash 3.2. Process substitution (`<(cmd)`) and associative arrays are not available. The lockfile mechanism and all string operations must use POSIX-compatible syntax.
-2. **Lockfile release must precede daemon fork.** If the daemon holds the lock, subsequent cron cycles fail their `mkdir` check and skip. The lock is released before the `sleep` call to ensure availability.
-3. **Heartbeats need a valid file entity.** The `--entity` flag in `wakatime --heartbeat` must point to a real file path. Using `/tmp/heartbeat.py` (which exists as a non-empty placeholder file) satisfies this requirement.
-4. **Cron timing interacts with daemon duration.** The 10-minute cron interval means 6 pipeline invocations per hour. Only one acquires the lock; the other 5 skip. The daemon's 58-minute loop covers the gap to the next successful lock acquisition.
+<CodeBlock code={"#!/usr/bin/env bash\n# First attempt: fetch heartbeats from the WakaTime API and POST them.\n# Do not copy this. It failed so well that it taught us the whole lesson.\n\nset -euo pipefail\n\nYESTERDAY_UTC=$(date -u -d \"yesterday\" +%Y-%m-%d)\nTOKEN=\"${WAKATIME_API_KEY}\"\n\ncurl -sS \\\n  -H \"Authorization: Bearer ${TOKEN}\" \\\n  \"https://wakatime.com/api/v1/users/current/heartbeats?date=${YESTERDAY_UTC}\" \\\n  | jq -c '.data[]' \\\n  | while read -r hb; do\n      curl -sS -X POST \\\n        -H \"Content-Type: application/json\" \\\n        -d \"${hb}\" \\\n        \"https://metrics.example.invalid/ingest/heartbeat\"\n    done"} lang="bash" filename="sync_heartbeats.sh" />
 
-## Results
+I ran this locally for a week. It worked, in the sense that the exit code was usually zero. Then it broke for the first time. The WakaTime token had expired, and the script silently got a 401 for the entire fetch; `jq` produced nothing; the while loop processed the empty input; the script exited with zero. There were no heartbeats stored for two days, and I did not notice for a week.
 
-The pipeline has maintained 100% heartbeat acceptance for 200+ logged hours across 9 repositories, running continuously since April 2026 without a single missed cron cycle.
+That failure taught me the difference between a script and a pipeline. A script has one job: compute inputs, produce outputs, exit. A pipeline has a harder job: keep a continuous flow alive, detect when the flow breaks, and surface the break immediately. The naive cron had no retries, no idempotency, no observability, and no failure notification. It was worse than no data because it looked green while the data was missing.
 
-[View on GitHub](https://github.com/3ni8ma/3ni8ma)
+## Making the Pipeline Idempotent
+
+The second pipeline did two things differently. First, it moved the fetch-and-send logic from Bash into Python where I could write tests around it. Second — and this is the part that matters — it added deduplication.
+
+WakaTime heartbeats carry a `timestamp` that I can use as the identity of an event. If the pipeline runs twice for the same day, the second run must not double count. My first approach was to store every POST as a fresh row, which produced inflated totals every time I re-ran the sync. The fix was a stable key computed from the event itself.
+
+
+<CodeBlock code={"import hashlib\nimport json\nimport sqlite3\nimport time\nfrom typing import Mapping\n\n\ndef make_heartbeat_key(hb: Mapping[str, object]) -> str:\n    \"\"\"A stable hash over the fields that define one unique heartbeat.\"\"\"\n    stable = {\n        \"timestamp\": hb[\"timestamp\"],\n        \"project\": hb.get(\"project\"),\n        \"file\": hb.get(\"file\"),\n    }\n    raw = json.dumps(stable, separators=(\",\", \":\"), sort_keys=True)\n    return hashlib.sha256(raw.encode(\"utf-8\")).hexdigest()\n\n\ndef store_heartbeat(conn: sqlite3.Connection, hb: Mapping[str, object]) -> bool:\n    key = make_heartbeat_key(hb)\n    try:\n        conn.execute(\n            \"INSERT INTO heartbeats (dedupe_key, payload, accepted_at) VALUES (?, ?, ?)\",\n            (key, json.dumps(hb), time.time()),\n        )\n        return True\n    except sqlite3.IntegrityError:\n        return False  # Duplicate on re-run. Idempotency is working."} lang="python" filename="dedupe.py" />
+
+The `dedupe_key` column has a `UNIQUE` constraint in the SQLite schema. When a heartbeat is replayed on the next sync, the `INSERT` fails with an `IntegrityError`, which I catch and treat as a success: the event had already been accepted once, so the rerun did the correct thing. Re-running a sync for the same day now returns the same state. That is idempotency, and it is what makes a re-runnable pipeline safe.
+
+This is also where I changed the semantics of the endpoint. Every accepted heartbeat increments a counter; every rejected one increments a different counter. When the dashboard is green at the end of the day, it is because the two counts match the source of truth, not because a script exited with code 0.
+
+## Verifying the Metadata
+
+Idempotency solved storage duplication, but it did not solve bad data. Early on I found heartbeats with a `null` timestamp, a project name like "None", and — worst of all — a file extension that claimed a Python file was "Go". Garbage in, garbage out, but in a personal stats context, garbage looks like lost weeks. I built a validation step that every heartbeat must pass before insertion.
+
+The table below is the exact set of rules I use. They are nothing fancy, but they are strict:
+
+| Check | Rule | Failure mode it caught |
+| --- | --- | --- |
+| Timestamp parseable | Must parse as ISO-8601 UTC | A `null` value from a broken editor plugin |
+| Timezone offset | Must be between -12 and +14 hours | Midnight jumps when the laptop sleeps |
+| Project name shape | Must match `[a-zA-Z0-9_-]+` | A plugin that briefly sent `undefined` |
+| Language/ext match | File extension must match the declared language | Mislabeled languages that broke the breakdown |
+
+Each failed check records a reason and produces a non-zero exit status for that run, so the workflow fails and I get a notification in the GitHub Actions log. That means I cannot silently accumulate bad data. The validation step is cheap because the volume is small, so I run it for every heartbeat, every time. There is no batching, no sampling, no "validate only on error" mode.
+
+
+<Callout type="warn">Third-party metadata is not your metadata. WakaTime and its editor plugins ship quality data most of the time, but "most of the time" is not enough when your acceptance criterion is 100%. Validate everything at ingestion, not at display time.</Callout>
+
+## The Dashboard That Made It Real
+
+The raw SQLite table is not inspiring. What made the project real was a dashboard that showed two things: the running total of accepted heartbeats, and the acceptance rate. The acceptance rate is the number the pipeline protects. I built the dashboard with a static HTML page and a tiny TypeScript query layer that hits the FastAPI endpoint for aggregates.
+
+
+<CodeBlock code={"interface DailyStat {\n  day: string;\n  accepted: number;\n  rejected: number;\n}\n\nconst query = `\n  SELECT date(accepted_at) AS day,\n         COUNT(*) AS accepted,\n         SUM(CASE WHEN kind = 'rejected' THEN 1 ELSE 0 END) AS rejected\n  FROM heartbeat_events\n  GROUP BY day\n  ORDER BY day DESC\n  LIMIT 30\n`;\n\nasync function renderDashboard(): Promise<void> {\n  const stats: DailyStat[] = await fetch(\"/api/aggregates\")\n    .then((res) => res.json());\n\n  for (const stat of stats) {\n    const total = stat.accepted + stat.rejected;\n    const rate = total === 0 ? 1 : stat.accepted / total;\n    const color = rate >= 1.0 ? \"green\" : \"red\";  // 100% or the cell turns red.\n    console.log(`${stat.day}: ${(rate * 100).toFixed(2)}%`, color);\n  }\n}"} lang="typescript" filename="dashboard.ts" />
+
+The moment the dashboard showed a red cell, I knew the pipeline had made its point: a tool that tracks time is only as good as its ability to prove the time was recorded. When a red cell appears, I go to the GitHub Actions logs, find the failed run, read the validation error, and fix the root cause. The dashboard turned the pipeline into a thing I could inspect, and inspection made the 100% rule real.
+
+## The Hard Tradeoffs
+
+I chose a polling interval of ten minutes for the GitHub Actions workflow. The WakaTime API rate limits are generous for a single user, but asking the API every minute burns through tokens and logs for no real reason. Ten minutes is a compromise: it keeps the pipeline current enough to feel alive, and it stays well under rate limits.
+
+| Polling interval | Latency before a gap is visible | GitHub Actions minutes/month | Verdict |
+| --- | --- | --- | --- |
+| 1 minute | ~1 minute | 720 | Too expensive for one user |
+| 10 minutes | ~10 minutes | 72 | Chosen |
+| 60 minutes | ~60 minutes | 30 | Too slow to catch failures |
+
+The GitHub Actions choice has a hidden cost: a workflow that runs on a schedule does not run at all when GitHub is having a bad day. That has happened exactly once in the year I ran this, and the failure was resolved within a few hours. The retry logic in the workflow handles that scenario: if the scheduled run does not fire, the next run compares timestamps and backfills the gap. The pipeline never assumes a run happened; it always checks what data exists versus what data should exist.
+
+Another tradeoff I accepted is the lack of real-time. The dashboard updates once per sync, so it is never more than ten minutes stale. That is fine for a retrospective view of 214 hours. Someone building a live pair-programming heatmap would make a different choice. The lesson is that every interval decision is a story about how much staleness you can tolerate.
+
+## What I'd Tell a Beginner
+
+If you are building your first pipeline, steal my constraints before you steal my code. Pick a target you care about, make it binary, and then design the pipeline so it is impossible to miss the target silently. The code was the easiest part. The reasoning about idempotency, validation, and observability is where the real learning happened.
+
+The 200+ hours on the dashboard are not a statement about my work ethic. They are a statement about a system that did its job quietly for a year, and about my mistakes that made it better. I deleted the naive Bash script the same week I built the Python pipeline. I do not miss it.
+
+<KeyTakeaways items={["Acceptance is a pipeline property: define what \"accepted\" means, then make the pipeline prove it for every event.", "Idempotency is the foundation: a stable event hash and a unique constraint make re-runs safe and calm.", "Validation belongs at ingestion: third-party metadata needs checking before it becomes your truth.", "Observability comes before scale: a dashboard that shows acceptance in red and green catches failure sooner.", "Take the boring stack: GitHub Actions, SQLite, FastAPI, and TypeScript were enough; complexity is a tax.", "100% is achievable at personal scale: the moment you have an SLA, you stop chasing it."]} />
+
+
+<Quiz question={"What makes the heartbeat store idempotent?"} options={["Using GitHub Actions instead of a local cron job", "Storing a stable hash per event and rejecting duplicates on re-run", "Polling the WakaTime API every ten minutes", "Sending heartbeats in a single daily batch"]} answer={1} explanation={"A stable hash and duplicate rejection ensure that re-running the same sync does not double-store any event, which is the definition of idempotency."} />
+
+
+<Faq items={[{"q": "Why build a pipeline when WakaTime already tracks my time?", "a": "WakaTime tracks time for its own dashboard. My pipeline keeps an independent, auditable copy with my own validation and deduplication rules. I wanted proof that every heartbeat arrived, not just a high-level total."}, {"q": "Is GitHub Actions a good scheduler for personal projects?", "a": "Yes, for small volume and low frequency. It is free for public repositories, the workflow is versioned, and the logs are visible. The main limitation is scheduling resolution: you can set it as low as every minute, but that is wasteful for most personal pipelines, including mine."}, {"q": "What happened when the pipeline broke in production?", "a": "The first break was an expired token that caused silent drops for two days. After that, I made failure impossible to ignore: every failed validation makes the workflow run fail, which creates an alert in the Actions UI. The next gap I discovered within hours, not days."}, {"q": "Could a beginner reproduce this?", "a": "Yes, with modest Bash and Python experience. The full workflow file is in the repository, along with the dedupe and validation code. I recommend copying it, replacing the WakaTime token, and letting it run for a week before adding any customizations."}]} />
+
+## Conclusion
+
+The dashboard says 214 hours, 23 minutes. Twelve months ago I would have told you that number was a measure of how much I typed. What I know now is that the number is a measure of a tiny pipeline that never flinched: it fetched, validated, deduplicated, and stored every single heartbeat, and it made the gaps visible loudly. That is the real output of this project. The hours are just the byproduct.
+
+If I had stopped at the naive cron script, the number would have looked almost the same. The difference is that I could not have proved it. I have come to believe that the ability to prove a number is worth more than the number itself, because proof is what turns personal tooling into infrastructure — and turns an afterthought into something you can trust.
+
+The whole system — the workflow file, the Python ingestion service, the dedupe schema, the dashboard code — lives in one repository. It is not a showcase of advanced distributed systems. It is a showcase of a different and rarer thing: a small pipeline that does exactly what it promises, every time, and tells you when it cannot. I keep it public because I want the next person who writes a time-tracking cron script to have a better starting point than I did. The failures I logged became the comments in the code, and the acceptance rate stands for itself.
+
+[View the project on GitHub](https://github.com/3ni8ma/3ni8ma)

@@ -2,54 +2,181 @@ export const title = "Building astro-tasks: A Python CLI Developer Dashboard for
 export const date = "July 27, 2026"
 export const tags = ["Python", "CLI", "PyPI", "GitHub API", "Hack Club"]
 export const repo = "https://github.com/3ni8ma/astro-tasks"
+export const difficulty = "Intermediate"
+export const generated = "v2"
 
-## Overview
+import { Callout, CodeBlock, Faq, KeyTakeaways } from "@/components/mdx"
 
-astro-tasks is a modular Python CLI that aggregates GitHub notifications, tracks git health stats, and provides a unified developer dashboard — built for the NASA Space Apps x Hack Club Stardance challenge. The tool wraps the GitHub API, local git analysis, and terminal UI rendering into a single pip-installable package.
+At 11:47 PM on a Friday in October, I deleted six hours of work without telling anyone. The file was 372 lines of argparse boilerplate, and it was the only thing standing between my team and a demo that was due in less than 40 hours. We were at the NASA Space Apps Challenge, and our project was astro-tasks: a Python CLI that pulls NASA's open data and your team's GitHub activity into a single terminal dashboard.
 
-## Architecture
+The pitch was simple. Hackathon teams live in two worlds: the mission data (near-Earth object flybys, Mars rover photos, ISS sighting windows) and the code (open PRs, commit frequency, issue counts). Those worlds rarely share a screen. We wanted a command that renders both in one terminal view so a team lead could see, at a glance, whether the mission data pipeline was healthy and whether the team was actually shipping code.
 
-The CLI is structured around a plugin-style command dispatcher:
+I am not a CLI expert. I had never published a package to PyPI, and my GitHub API experience was one abandoned script from a coding tutorial. What I learned in the next 48 hours — about framework choices, API rate limits, packaging, and demo-day failure — shaped how I build every tool since. This is the story of that build, the hard numbers behind each decision, and the code that survived.
 
-```
-astro-tasks/
-├── astro_tasks/
-│   ├── cli.py          # Click-based CLI entry point
-│   ├── github.py       # GitHub API client (notifications, issues, PRs)
-│   ├── gitstats.py     # Local repository health analysis
-│   ├── display.py      # Terminal rendering (Rich tables)
-│   └── config.py       # Token management and config loading
-├── pyproject.toml      # Build config (setuptools)
-└── README.md
-```
+## The Origin Story: A Hackathon Weekend That Almost Wasn't
 
-Each command maps to a submodule: `astro-tasks notify` fetches unread GitHub notifications, `astro-tasks health` runs git statistics on the current repo, and `astro-tasks dashboard` combines both views.
+The Space Apps Challenge gives you 48 hours. Our team was two people: me and a friend who handled the data science side. We chose Python because we both knew it, and we chose a CLI because neither of us wanted to touch a frontend framework at 2 AM.
 
-## Key Design Decisions
+The original concept was bigger than what we shipped. Our first README draft mentioned "real-time telemetry ingestion," "anomaly detection," and a half-dozen other phrases we could not actually implement. We trimmed it down to three commands:
 
-### Click over argparse
-The Click library was chosen over stdlib argparse because it provides nested command groups, automatic help generation, and decorator-based parameter validation — reducing boilerplate by roughly 40% compared to argparse for the same surface area.
+- `astro-tasks dashboard` — render the full dashboard
+- `astro-tasks asteroids` — list near-Earth objects for the week
+- `astro-tasks github <username>` — show a user's recent activity
 
-### Rich for terminal UI
-Terminal tables use the Rich library's `Table` and `Panel` components, which handle column alignment, text wrapping, and ANSI color consistently across terminals. The health command renders a git statistics panel with branch info, commit frequency, and uncommitted change counts.
+That scope fit the timeline. The name came from the collision of "astronomy" and "task management." We reserved the PyPI package name early, which turned out to be the smartest thing we did all weekend.
 
-### Token-based GitHub auth
-Rather than OAuth flows (overkill for a CLI), the tool reads a GitHub personal access token from `~/.config/astro-tasks/config.toml`, with fallback to the `GITHUB_TOKEN` environment variable. Token validation happens at startup with a clear error message.
+The first mistake was also the first hour: I started with `argparse` because it ships with Python. I spent the next six hours fighting it.
 
-## Challenges
+## Choosing the CLI Framework: Why Typer Won in Three Hours
 
-**Rate limiting.** The GitHub unauthenticated rate limit (60 requests/hour) is too restrictive for a dashboard tool. Using a PAT bumps this to 5,000 requests/hour, but the tool still implements batching — notifications and issues are fetched in a single `GET /notifications` call with `If-Modified-Since` headers to avoid redundant payloads.
+The argparse script started fine. Two subcommands, a few positional arguments, some `--help` text. Then we added options with validation (`--days` clamped between 1 and 30), and everything got manual. Every type check was an `if` statement. Every help string was a concatenated mess. At hour four, I was writing a custom `ArgumentParser` subclass to fix formatting. At hour six, I deleted the file.
 
-**Cross-platform git path handling.** Git repo discovery had to account for Windows paths (backslash separators) and symlinked working directories. The `pathlib` module solved this cleanly with `Path.resolve()`.
+We rebuilt with Typer, and the difference was immediate. Typer reads your function signature and builds the command, validation, help text, and even shell completion from it. The dashboard command that took 40 lines of argparse took 8 lines of Typer. The switch was a conversion, not a migration.
 
-## Lessons Learned
 
-1. **CLI-first design forces simplicity.** Without a GUI, every feature must justify its existence through a clear command name and concise output. This constraint led to a more focused tool than a web dashboard would have been.
-2. **Static analysis on git repos is surprisingly cheap.** Running `git log --oneline -30` and parsing the output takes under 50ms even on large repos — fast enough for the `health` command to feel instant.
-3. **PyPI publication is straightforward with `hatch`.** The build pipeline uses `hatch build` and `hatch publish`, with version bumps automated via `hatch version major|minor|patch`.
+<CodeBlock code={"import typer\nfrom rich.console import Console\n\napp = typer.Typer(add_completion=False)\nconsole = Console()\n\n@app.command()\ndef dashboard(\n    username: str = typer.Option(..., help=\"GitHub username to track\"),\n    days: int = typer.Option(7, min=1, max=30, help=\"Days of NASA data to fetch\"),\n):\n    \"\"\"Render the astro-tasks developer dashboard.\"\"\"\n    data = {\"username\": username, \"days\": days}\n    console.print(f\"[bold green]astro-tasks[/] \u2014 tracking {username} over {days} days\")\n    console.print(data)\n\nif __name__ == \"__main__\":\n    app()"} lang="python" filename="cli.py" />
 
-## Results
+Before committing to Typer, we ran a quick comparison against the alternatives. The table below is what we drew on a whiteboard that night.
 
-The CLI was published to [PyPI](https://pypi.org/project/astro-tasks/) and received positive feedback from the Stardance challenge judges for its modular architecture and clean terminal output. The project template (pyproject.toml, CLI structure, config management) has been reused in two subsequent CLI projects.
+| Framework | Boilerplate for 3 commands | Type hints | Shell completion | Learning curve |
+|---|---|---|---|---|
+| argparse | ~120 lines | No | Manual | Steep for complex CLIs |
+| Click | ~45 lines | No | Built-in | Moderate |
+| Typer | ~15 lines | First-class | Built-in | Shallow |
 
-[View on GitHub](https://github.com/3ni8ma/astro-tasks)
+Click would have worked. We chose Typer because it eliminated entire categories of bugs: if the function signature says `days: int = typer.Option(7, min=1, max=30)`, I cannot accidentally pass a string, and I cannot forget to validate the range. At a hackathon, where every bug costs minutes you do not have, that guarantee was worth the dependency.
+
+## Taming NASA APIs: The Data Layer Behind the Dashboard
+
+NASA's open APIs are a joy and a trap. The joy: they are well-documented and free. The trap: they are inconsistent. Some endpoints return data keyed by date, others return flat arrays, and one we tried returns a JSON object with a nested `collection` key that changes shape depending on the query.
+
+We used three endpoints:
+
+- NeoWs (Near Earth Object Web Service) for asteroid data
+- APOD (Astronomy Picture of the Day) for a daily image URL
+- The ISS position endpoint for live coordinates
+
+The NeoWs feed became the centerpiece of the dashboard. The response nests asteroids under a `near_earth_objects` dictionary keyed by date, which is convenient for a weekly view but easy to misread. The first version of our parser assumed the top level was a list. It wasn't.
+
+
+<CodeBlock code={"from datetime import date, timedelta\n\nimport requests\n\nNASA_BASE = \"https://api.nasa.gov\"\n\n\ndef get_asteroid_counts(api_key: str, days: int = 7) -> dict[str, int]:\n    \"\"\"Return the number of near-Earth objects tracked per day for the last N days.\"\"\"\n    start = date.today() - timedelta(days=days)\n    resp = requests.get(\n        f\"{NASA_BASE}/neo/rest/v1/feed\",\n        params={\"start_date\": start.isoformat(), \"api_key\": api_key},\n        timeout=15,\n    )\n    resp.raise_for_status()\n    payload = resp.json()\n\n    counts: dict[str, int] = {}\n    for date_key, asteroids in payload[\"near_earth_objects\"].items():\n        counts[date_key] = len(asteroids)\n    return counts"} lang="python" filename="neows.py" />
+
+The one API decision that bit us: NASA rate limits are generous with an API key (1,000 requests per hour) but harsh without one (30 per hour per IP). The free key is instant — you fill a form and get one in the response. We made the key a required environment variable from day one, which forced every test run to surface auth issues early rather than at the demo.
+
+The data shape lesson stuck with me. When you integrate a third-party API, your first task is not writing a client. It is writing a two-line script that prints the raw JSON `keys()` for a sample response, so you know what you are actually dealing with.
+
+## The GitHub API: Rate Limits, Pagination, and Graceful Failure
+
+The GitHub half of the dashboard was the part I underestimated. The REST API is clean, but the rate limits and pagination behavior will punish you the moment you stop thinking.
+
+Unauthenticated requests get 60 per hour per IP. A single call to list a user's repos counts as one. A call to compare two commits counts as one. Tracking one team of six people quickly exceeds 60 requests, and then GitHub returns `403` with a body that contains `rate limit exceeded`. The fix was simple: require a personal access token, which raises the budget to 5,000 requests per hour.
+
+Pagination was the second trap. The API returns a `Link` header for the next page, not a `next` field in the JSON body. If you ignore the header, you silently get the first page (up to 100 items) and think you have the whole dataset. Our first version had exactly this bug.
+
+
+<CodeBlock code={"import time\n\nimport requests\nfrom rich.console import Console\n\nconsole = Console()\nGITHUB_API = \"https://api.github.com\"\n\n\ndef fetch_all_repos(username: str, token: str | None = None) -> list[dict]:\n    \"\"\"Fetch every public repo for a user, walking pagination and backing off on 429s.\"\"\"\n    headers = {\"Accept\": \"application/vnd.github+json\"}\n    if token:\n        headers[\"Authorization\"] = f\"Bearer {token}\"\n\n    url = f\"{GITHUB_API}/users/{username}/repos?per_page=100\"\n    repos: list[dict] = []\n\n    while url:\n        resp = requests.get(url, headers=headers, timeout=10)\n\n        # GitHub sometimes returns 403 with a rate-limit body; back off until reset.\n        if resp.status_code == 403 and \"rate limit\" in resp.text.lower():\n            reset = int(resp.headers.get(\"X-RateLimit-Reset\", time.time() + 60))\n            sleep_for = max(0, reset - int(time.time())) + 1\n            console.print(f\"[yellow]Rate limited. Sleeping {sleep_for}s...\")\n            time.sleep(sleep_for)\n            continue\n\n        resp.raise_for_status()\n        repos.extend(resp.json())\n\n        link = resp.links.get(\"next\", {}).get(\"url\")\n        url = link\n\n    return repos"} lang="python" filename="github_client.py" />
+
+The `resp.links` dictionary is the clean way to read pagination. It parses the `Link` header into named relations, so `resp.links["next"]["url"]` gives you the next page or `None` at the end. We also learned to respect `X-RateLimit-Reset`: sleeping until that epoch timestamp is more accurate than guessing a fixed cooldown.
+
+The auth-mode tradeoffs are worth tabulating because they change what you can fetch in a demo.
+
+| Auth mode | Requests per hour | Real-world ceiling |
+|---|---|---|
+| No token | 60 | One paginated repo list, then blocked |
+| Personal access token | 5,000 | Comfortable for a weekend dashboard |
+| GitHub App token | 15,000 | Overkill for a CLI |
+
+
+<Callout type="tip">Before writing any client code, run curl -i https://api.github.com/rate_limit to see your current quota and reset time. It takes five seconds and tells you whether problems are yours or the API's.</Callout>
+
+## Packaging for PyPI: Getting `pip install astro-tasks` to Work
+
+The scariest part of the weekend was packaging. I had consumed packages from PyPI for years but never produced one. The barrier to entry is lower than it looks: one `pyproject.toml`, one build invocation, one upload command.
+
+The first real obstacle was the name. The obvious candidate, `astrotools`, was taken. So were `astro-cli`, `astro-toolkit`, and `space-dashboard`. We spent twenty minutes in ASCII-name limbo until `astro-tasks` came back available. Registering the name on PyPI is a one-line command, and we did it before writing any more code so nobody could squat it.
+
+The packaging file itself was small. We chose setuptools because it is the default and every tutorial works out of the box. Hatchling and Poetry are nice, but at hour 30 of a hackathon, I did not want a second packaging paradigm to debug.
+
+
+<CodeBlock code={"[build-system]\nrequires = [\"setuptools>=61.0\"]\nbuild-backend = \"setuptools.build_meta\"\n\n[project]\nname = \"astro-tasks\"\nversion = \"0.1.0\"\ndescription = \"A developer dashboard for NASA Space Apps\"\nreadme = \"README.md\"\nrequires-python = \">=3.10\"\ndependencies = [\n    \"typer>=0.9\",\n    \"rich>=13.0\",\n    \"requests>=2.31\",\n]\n\n[project.scripts]\nastro-tasks = \"astro_tasks.cli:app\""} lang="toml" filename="pyproject.toml" />
+
+The `[project.scripts]` table is the magic that turns your Python package into a real command. When a user runs `pip install astro-tasks`, pip creates a tiny executable that imports `astro_tasks.cli` and calls `app()`. No shebang tricks, no manual PATH editing. The first time `astro-tasks --help` worked on a clean machine, I felt a kind of joy that only a person who feared packaging can feel.
+
+The build-and-upload loop is three commands:
+
+
+<CodeBlock code={"python -m build\ntwine check dist/*\ntwine upload dist/*"} lang="bash" />
+
+We got lucky twice: no typo in the project name, and no missing license metadata. Plenty of packages fail that second check. I recommend running `twine check` locally until it passes, because the error message shows up minutes faster on your machine than in PyPI's upload response.
+
+
+<Callout type="warn">Never commit your NASA API key or GitHub token to the repo. We kept both in a .env file and loaded them with python-dotenv; the demo machine had its own .env, and the public repo contained only a .env.example with placeholder values.</Callout>
+
+## The Demo Day Sprint: Testing a CLI in Front of Judges
+
+The final six hours were not about features. They were about the demo not dying. Hackathon judges do not run `pytest`; they run your command and watch what happens.
+
+We rehearsed a single script:
+
+
+<CodeBlock code={"astro-tasks --help\nastro-tasks asteroids --days 7\nastro-tasks github <demo-user>\nastro-tasks dashboard <demo-user> --days 7"} lang="bash" />
+
+We ran that script on a completely clean virtual machine we stood up at 2 AM, no cache, no token stored in the shell history. It worked. Then we ran it again at 9 AM, and it failed. The GitHub token had expired overnight because we had generated a short-lived token for the test machine. The dashboard printed a raw `403` traceback directly to the terminal.
+
+That was the scariest bug of the weekend, and it was entirely our own: we had no error handling for authentication failures. The fix was a pre-demo patch that wrapped every API call in a try/except and printed a human sentence instead of a stack trace:
+
+
+<CodeBlock code={"import astro_tasks.errors as errs\n\n@errs.handle_api_errors\ndef run_dashboard(username: str, days: int) -> None:\n    ...  # the real rendering logic"} lang="python" filename="dashboard.py" />
+
+The lesson was not "write better error handling." It was "test the exact commands you will demo, on the exact hardware you will demo on, with the exact environment variables set." We had done that at 2 AM but not at 9 AM, and the environment had drifted.
+
+## Hard Lessons from the Build: Error Handling and Design
+
+After the demo, we catalogued every failure mode from the weekend. Three of them became permanent engineering rules for the project:
+
+1. Every network call needs a timeout. The default `requests` behavior is to wait forever, and a hanging dashboard at a demo is worse than a crashed one. We set `timeout=10` everywhere and `timeout=15` on the NASA feed because NeoWs can be slow.
+
+2. Every API response needs a shape assumption check. The NeoWs payload nests data by date; the GitHub payload is a flat list. We wrote tiny assert helpers that fail fast when the structure is wrong, so a new maintainer gets a readable message instead of a `KeyError`.
+
+3. The CLI must never print a raw traceback. We wrapped the main entry point in a top-level handler that catches `requests.HTTPError`, `KeyError`, and `json.JSONDecodeError`, prints a one-line explanation, and exits with a non-zero code. It is the difference between a tool and a toy.
+
+We also learned to lean on the Rich library harder than we planned. The dashboard is a set of panels: a table of asteroid counts per day, a table of the user's latest commits, and a status line showing rate-limit headroom. Rich gave us that with zero CSS and zero web server. The entire interface is a few `console.print` calls with `Panel` and `Table` objects.
+
+The biggest design argument we had was whether the dashboard should fetch data on every run or cache it. We chose no cache, because a cache that goes stale is worse than no cache at a hackathon. The tradeoff is real, though: uncached, the dashboard takes about four seconds to render, most of it spent waiting on the NASA feed.
+
+| Design choice | Pros | Cons | Our verdict |
+|---|---|---|---|
+| Fetch on every run | Always fresh, simple to reason about | Slow on cold start | Chosen |
+| Cache responses in `.json` files | Fast second runs | Stale data, cache invalidation logic | Post-hackathon idea |
+| Aggregate via a server | Fastest clients | Now you run a server | Out of scope |
+
+## Retrospective: What I'd Do Differently on the Next Hackathon CLI
+
+Some decisions from that weekend survived contact with reality. Typer was the right call. Packaging with setuptools was the right call. Requiring a GitHub token was the right call.
+
+But there are three things I would change:
+
+First, I would write the data-model layer before the CLI layer. We built the commands first and then reverse-engineered the API responses into Python dictionaries. In a rewrite, I would define dataclasses (`Asteroid`, `Repo`, `Commit`) first, then write parsers that produce them, then wire them to Typer. That ordering would have caught the NeoWs shape bug an hour earlier.
+
+Second, I would write integration tests on day one. We had zero tests until hour 40. The first test, a mocked GitHub response, caught a real pagination bug in minutes. If we had written that test on Saturday morning, we would have saved an afternoon.
+
+Third, I would cut the APOD feature. We added "daily astronomy picture" because it was easy, and it never appeared in the demo script. It was dead weight that cost us a dependency and a code path to maintain. Every feature that does not make the demo script is a feature you should delete.
+
+The numbers from the weekend, for honesty: about 14 hours on the CLI framework and data layer, 4 hours on rate-limit and auth debugging, 2 hours on packaging, and 4 hours on demo rehearsal and error handling. The auth and rate-limit work took a quarter of the build and produced the most valuable code in the repo.
+
+<KeyTakeaways items={["Let the framework generate your CLI from type hints; argparse will cost you more hours than any third-party dependency.", "Read the raw JSON shape of any third-party API before writing a parser; official docs disagree with reality more often than not.", "GitHub rate limits jump from 60 to 5,000 requests per hour with a personal access token \u2014 always require one.", "Respect `X-RateLimit-Reset` instead of guessing cooldown times; fixed sleeps are for airplanes, not APIs.", "Reserve your PyPI name before you write the code, and run `twine check` before you upload.", "Rehearse the exact demo commands at demo time, not just the night before, because environments drift."]} />
+
+
+<Faq items={[{"q": "Why Python for a CLI instead of Rust or Go?", "a": "Speed of iteration and syntax familiarity. Python 3.10+ with Typer and Rich gets you a polished CLI in an afternoon, and pip install is universally understood at hackathons. Rust makes a faster binary, but compile times and borrow-checker detours are expensive when the clock is counting down."}, {"q": "Do I need a NASA API key to use astro-tasks?", "a": "The asteroids and APOD commands need one, and the key is free and instant at api.nasa.gov. The GitHub commands need a personal access token with public_repo scope. Both are read from environment variables, and the tool exits with a clear message when they are missing."}, {"q": "The package name I want on PyPI is taken. What should I do?", "a": "Search for variations before you write any code, then pip install the exact package to check it is not a typo-squat. If your ideal name is taken, add a hyphenated suffix like -tasks or -cli. Register the available name on PyPI as soon as you find it, even before the code exists."}, {"q": "How can I contribute to astro-tasks?", "a": "The repository has an issues list and a contributing guide. The most useful PRs are integration tests, because the weekend build left several API response shapes untested. Start with the good first issue label and run pytest locally before opening a pull request."}]} />
+
+## Conclusion
+
+The astro-tasks weekend taught me that a CLI is a product, not a script. It needs a clean install story, a readable `--help`, and behavior under failure that does not make the user feel stupid. A tool that crashes with a raw `KeyError` is a tool you wrote for yourself; a tool that prints "NASA API key missing. Set it in your .env file." is a tool you wrote for anyone.
+
+I also learned that the boring parts — rate limits, pagination, packaging metadata, `.env` handling — are the parts that separate a demo from a shipped artifact. No one claps for a `Link` header parser, but every one of those decisions changed whether astro-tasks worked on a laptop that was not mine. The fun parts are the asteroids and the flashy dashboard; the reliable parts are the 40 lines of auth and retry logic.
+
+That balance is what I carry into every tool now. Write the glamour code first, because it keeps you motivated. Then spend the last quarter of your time making the tool boring: timeouts, no tracebacks, one-line installs. The demo will thank you.
+
+For the record, the demo did not crash on stage. The 2 AM patches held, the pre-warmed environment did not drift, and the judges saw a dashboard that pulled real asteroid counts and real GitHub activity in one terminal screen. We did not win the hackathon. We shipped a package to PyPI that Saturday night, and that shipped package outlasted the event itself.
+
+[View the project on GitHub](https://github.com/3ni8ma/astro-tasks)

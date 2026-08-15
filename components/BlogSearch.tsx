@@ -9,6 +9,7 @@ interface Post {
   title: string;
   date: string;
   excerpt: string;
+  readingTime: string;
 }
 
 export default function BlogSearch({ posts }: { posts: Post[] }) {
@@ -55,6 +56,7 @@ export default function BlogSearch({ posts }: { posts: Post[] }) {
               <span className="text-xs font-bold text-cyan/80 uppercase tracking-wider">
                 {post.date}
               </span>
+              <span className="ml-2 text-xs text-white/40">{post.readingTime}</span>
               <h2 className="mt-2 text-xl font-bold text-white group-hover:text-cyan transition-colors leading-snug">
                 {post.title}
               </h2>

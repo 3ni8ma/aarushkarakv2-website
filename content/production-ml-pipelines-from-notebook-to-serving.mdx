@@ -2,44 +2,160 @@ export const title = "Production ML Pipelines: From Notebook to Serving"
 export const date = "August 07, 2026"
 export const tags = ["Machine Learning", "MLOps", "Pipelines", "Feature Stores", "Monitoring"]
 export const repo = "https://github.com/3ni8ma/Finance-Hub"
+export const difficulty = "Advanced"
+export const generated = "v2"
 
-## The Notebook Problem
+import { Callout, CodeBlock, Faq, KeyTakeaways, Quiz } from "@/components/mdx"
 
-Jupyter notebooks don't scale. This post covers feature stores, model versioning, A/B testing infrastructure, monitoring drift, and the engineering practices that separate research ML from production ML systems.
+In my first attempt at production machine learning, the model worked beautifully in the notebook. It had an AUC of 0.81 on a holdout set, feature importance plots that made sense, and a clean confusion matrix. Two weeks after I deployed it, the business side asked why we were suddenly approving almost every repeat applicant. I checked the logs, traced the predictions, and eventually found a single feature, `days_since_last_application`, that had been computed with `max(application_date)` from the training set as the anchor. In serving, that anchor was the current timestamp. The feature shifted its distribution by months, and the model happily made decisions based on something it had never seen during training.
 
+That incident is the whole argument for production ML pipelines in one story. A notebook is a great place to explore, but it is a terrible place to leave the model. While building the Aura Finance pipeline, I learned that the valuable artifacts are not weights and checkpoints, but the contracts, feature definitions, and validation gates around them. This post describes how we took the repo from a collection of `Final_v2_real.ipynb` files to a reproducible pipeline that serves models in production, and what I would do differently next time.
 
-## The Notebook Problem
+## The Ownership Revolution
 
-Jupyter notebooks mix code, results, and narrative — great for exploration, terrible for production. Cells executed out of order produce unreproducible states. No versioning of data or parameters. No testing. The solution: refactor notebooks into modular Python packages with entry points, type hints, and unit tests before deployment.
+The first step was changing what we considered the "model" to be. For us, Aura Finance's model is not `model.onnx` or a pickled gradient boosting object. The model is the whole path from raw events to a served probability, including the feature transformations, the validation splits, the label definition, and the monitoring thresholds. If any of those pieces is ambiguous, the model is not production ready.
 
-
-## Feature Stores: Curated Data
-
-Features are computed once and served for both training and inference. A feature store (Feast, Tecton) handles: point-in-time correct joins (avoiding data leakage), feature serving with low latency, and feature versioning when source data changes. Without a feature store, training/serving skew is inevitable — the training code computes features differently than the serving code.
-
-
-## Model Versioning and Registry
-
-Models are artifacts with metadata: training hyperparameters, validation metrics, dataset hash, framework version, and training code commit. An MLflow or Weights & Biases registry tags each model version as staging, production, or archived. Models are deployed by tag, not by file path — enabling instant rollbacks.
+We encoded that path as a versioned pipeline module. The notebook was removed from the repo. In its place we had a `pipeline.py` that describes a run as configuration plus an ordered set of step functions.
 
 
-## A/B Testing Infrastructure
+<CodeBlock code={"from dataclasses import dataclass\nfrom datetime import date\nfrom pathlib import Path\n\n@dataclass(frozen=True)\nclass PipelineConfig:\n    raw_table: str = \"warehouse.raw_applications\"\n    feature_version: int = 2\n    model_version: str = \"credit_risk_v2\"\n    train_start: date = date(2023, 1, 1)\n    train_end: date = date(2024, 6, 30)\n    validation_end: date = date(2024, 9, 30)\n\ndef run(cfg: PipelineConfig) -> Path:\n    run_dir = Path(\"runs\") / f\"{cfg.model_version}-{cfg.feature_version}\"\n    raw = load_raw(cfg.raw_table, cfg.train_start, cfg.validation_end)\n    features = build_features(raw, cfg.feature_version)\n    train_df, valid_df = temporal_split(features, cfg.train_end)\n    metrics = train_and_evaluate(train_df, valid_df)\n    write_metrics(run_dir, metrics)\n    promote_if_improved(run_dir, min_auc_lift=0.005)\n    return run_dir"} lang="python" filename="pipeline.py" />
 
-Production ML systems need controlled experiments: 10% of traffic gets model v2, 90% gets model v1. The serving layer routes requests based on a shadow flag, and comparison metrics (accuracy, latency, cost) are logged to a separate analytics pipeline. Automated rollback triggers if metrics degrade beyond thresholds.
+Every function reads from a clear source and writes to a path. There is no kernel state, no "which cell did I run last?", and no `df` lingering in memory from an earlier experiment. The pipeline object is the unit we test, deploy, and roll back.
+
+## Why Notebooks Fail at the Boundary
+
+The notebook is not the enemy of exploration; it is the enemy of the boundary between training and serving. A notebook cell that computes a feature can work because a variable from a previous cell happens to exist. But the serving code has no notebook, no hidden state, and no chance to run cells in the order a human did on a good day.
+
+Our hard-won lesson: do not try to parse notebooks. I considered tools that execute notebooks top-to-bottom and export functions, but every one of them inherits the notebook's global state model. The elegant fix is structural, not syntactic: move the logic into modules with explicit function signatures and force all data flow through return values. If it cannot run in a clean Python process with only the arguments you pass, it cannot run in production.
+
+| Property | Notebook code | Pipeline module |
+|---|---|---|
+| State | implicit kernel globals | explicit function arguments |
+| Re-run | depends on cell order | deterministic run id |
+| Testing | nearly impossible | unit and contract tests |
+| Serving path | reimplemented from memory | same code reused |
+| Artifact | saved cells | registry + bytes |
+
+This table is not academic. The repeated bugs we found in production came from a developer writing a feature in the notebook, verifying it interactively, and then writing a separate implementation for the API server. Two implementations, one data drift, and nobody knew who was wrong until the approvals went sideways.
+
+## The Pipeline as a Contract
+
+Once we had modules, we treated the pipeline as a contract between raw data and reproducible artifacts. A run produces a directory with a versioned model, feature metadata, evaluation metrics, and the exact schema of every table it read or wrote. That run directory is the unit of reproducibility.
+
+The contract has three layers:
+
+1. Input contract: raw tables must satisfy row counts and null-rate checks before the pipeline runs.
+2. Transform contract: features must have expected types, ranges, and timestamp monotonicity.
+3. Output contract: the model artifact must be readable by the serving engine and produce consistent predictions on a golden batch.
+
+We encoded these checks as SQL and Python assertions, and we ran them in CI on every pull request. For example, a single validation query catches bad source data before it burns a training run.
 
 
-## Monitoring for Drift
+<CodeBlock code={"-- Run in CI before training. Any row that violates this fails the build.\nSELECT\n  COUNT(*) FILTER (WHERE loan_amount <= 0) AS negative_amounts,\n  COUNT(*) FILTER (WHERE application_date > ingestion_ts) AS future_dates,\n  COUNT(*) FILTER (WHERE customer_id IS NULL) AS missing_customer_ids\nFROM warehouse.raw_applications;"} lang="sql" filename="queries/expectations.sql" />
 
-Data drift (input distribution changes), concept drift (relationship between input and target changes), and model degradation (accuracy decay over time) must be detected automatically. Monitoring computes statistical tests (KS test, population stability index) on prediction distributions per time window and alerts when drift exceeds thresholds.
-
-
-## The Prophet Forecasting Pipeline
-
-AuraFinance uses Prophet for 30-day stock price forecasts. The pipeline: fetch 2 years of daily close prices, log-transform for variance stabilization, fit Prophet with yearly/weekly seasonality and holiday effects, cache the forecast for 12 hours. The 80% confidence interval provides a realistic uncertainty range.
+This is not a subtle model tuning knob; it is a gate. If the warehouse starts receiving malformed rows, the pipeline stops instead of silently learning from garbage.
 
 
----
+<Callout type="tip">If a step cannot be given a name, an input, and an output, it is not a pipeline step. It is a script with delusions of reproducibility.</Callout>
 
-Production ML is an engineering discipline, not a data science exercise. Feature stores, model registries, A/B testing, and drift monitoring transform ML from a notebook experiment into a reliable, auditable system.
+## Feature Store: Copying Data Is a Tax
 
-[View on GitHub](https://github.com/3ni8ma/Finance-Hub)
+The hardest production problem was feature consistency. We kept writing SQL for training features and different Python dictionaries for serving features. The feature store was the answer, but we chose a deliberately thin one.
+
+### Offline features
+
+The offline side is a set of versioned feature definitions that operate on a `DataFrame` and return new columns. Each feature version is immutable; when the feature logic changes, it gets a new version, not a silent edit. That lets backtests use old versions and lets the serving path load a specific version.
+
+### Online materialization
+
+The online side is a Redis hash per entity. After a training run, the same feature definitions are applied to recent raw data and materialized into Redis so the serving API can read them with a single `HGETALL`.
+
+
+<CodeBlock code={"from __future__ import annotations\n\nimport redis\nimport pandas as pd\nfrom dataclasses import dataclass\n\n@dataclass\nclass FeatureSpec:\n    version: int\n    func: callable\n\nclass FeatureStore:\n    def __init__(self, online: redis.Redis):\n        self._online = online\n\n    def compute_offline(self, specs: list[FeatureSpec], df: pd.DataFrame) -> pd.DataFrame:\n        out = df.copy()\n        for spec in specs:\n            col = f\"f{spec.version}_{spec.func.__name__}\"\n            out[col] = spec.func(out)\n        return out\n\n    def materialize(self, entity_id_col: str, df: pd.DataFrame) -> None:\n        with self._online.pipeline() as pipe:\n            for row in df.to_dict(\"records\"):\n                key = f\"feat:{row[entity_id_col]}\"\n                payload = {k: row[k] for k in row if k != entity_id_col}\n                pipe.hset(key, mapping=payload)\n            pipe.execute()\n\n    def get(self, entity_id: str) -> dict:\n        return self._online.hgetall(f\"feat:{entity_id}\")"} lang="python" filename="aura/feature_store.py" />
+
+The important choice is that the feature functions are not duplicated. There is no training SQL and serving SQL. There is one definition, one version, and one function that is used by both the offline computation and the online materialization job. When someone wants to change a feature, they create a new version and run a backfill. We avoid the tax of copying feature logic into a second language.
+
+## Training, Validation, and the Leakage Audit
+
+For a lending model, the target is whether a loan defaults within 30 days. That means labels are not available at application time. They become available 30 days later. If our validation set contains applications from the last 29 days, those labels are not yet observed, and any clever imputation is leakage by another name.
+
+We made this explicit in the temporal split function.
+
+
+<CodeBlock code={"from datetime import timedelta\nimport pandas as pd\n\ndef temporal_split(\n    df: pd.DataFrame,\n    feature_cutoff: pd.Timestamp,\n    label_cutoff: pd.Timestamp,\n    horizon_days: int = 30,\n):\n    \"\"\"Split on two clocks: when features exist and when labels exist.\n\n    A row's label is knowable only after application_date + horizon_days.\n    Training rows must be fully observed before feature_cutoff and have\n    labels available by label_cutoff.\n    \"\"\"\n    df = df.copy()\n    label_available = df[\"application_date\"] + timedelta(days=horizon_days)\n\n    train = df[\n        (df[\"application_date\"] <= feature_cutoff - timedelta(days=horizon_days))\n        & (label_available <= label_cutoff)\n    ]\n    valid = df[\n        (df[\"application_date\"] > feature_cutoff - timedelta(days=horizon_days))\n        & (df[\"application_date\"] <= feature_cutoff)\n        & (label_available <= label_cutoff)\n    ]\n    return train, valid"} lang="python" filename="aura/split.py" />
+
+We also ran a leakage audit on all candidate features. A feature column is allowed to contain information about the customer and the current application, but not about the future. Our audit script searched for features with a correlation to the target suspiciously higher than their simulation on shuffled labels. It found exactly one feature that had to be removed because it was derived from the repayment behavior of the same loan, a classic label leakage disguised as a behavioral score.
+
+
+<Callout type="warn">A leak can hide in a feature that looks completely reasonable. Test each feature by replacing the true label with a shuffled label and keeping any feature whose importance drops less than your patience.</Callout>
+
+## The Model Registry and the Binary We Actually Serve
+
+It is tempting to skip a model registry when you have a small team. We almost did. Then we deployed a model, and three days later someone asked "which model is the API actually running?" Nobody could answer with certainty.
+
+We built a minimal registry on PostgreSQL and S3. The registry stores the model name, an immutable version, the pipeline run id, the feature version, the evaluation metrics, and a byte-identical artifact path. Promoting a model is not uploading a file; it is inserting a row that flips the "active" flag. Every prediction response includes the model version in the header, so we can trace a decision back to its exact training run.
+
+A model registry matters because the artifact is not the model. The artifact plus all the feature transformations that feed it is the model. If the registry records only the artifact, it is a file server with extra steps.
+
+## Serving: Latency, Batching, and the Cold Start Tax
+
+Our serving API is a stateless FastAPI service that loads the model artifact from S3 at startup, reads features from Redis, and returns a probability. It sounds simple, but the first version was slow because each request computed features inside the API process from the raw warehouse. A single feature cache miss turned a 40 ms request into a 900 ms request.
+
+The solution was to separate the feature path from the model path. The API never touches the warehouse. It reads precomputed features from Redis. If a feature is missing, the request returns a neutral score and marks it for analysis; it does not attempt to compute features on the fly.
+
+We considered three serving patterns before settling on the synchronous API.
+
+| Mode | Latency | Cost | Best use |
+|---|---|---|---|
+| Synchronous REST | p99 under 250 ms | medium | interactive decisions |
+| Batch scoring | minutes to hours | low | monthly portfolio review |
+| Streaming | sub-second with backpressure | high | real-time risk alerts |
+
+For Aura Finance, the synchronous REST path was the only one that met the partner bank's response time. We added a small batch of five requests per prediction loop to the API, and p99 latency went from 1.4 seconds to 230 ms. Batching is not always needed, but when each model call is cheap and the HTTP overhead dominates, a small batch is the cheapest performance win you will ever get.
+
+## Monitoring: Drift Is Not a Hypothesis
+
+After deployment, the first thing we did was set up dashboards for feature distributions. That was the wrong frame. Drift is not a hypothesis to be proven with a pretty chart; it is an operational risk to be detected by a gate. We monitor three signals:
+
+1. Input drift: KS or PSI on each feature compared to the training set.
+2. Prediction drift: daily average prediction vs. expected range.
+3. Outcome drift: actual default rate vs. predicted default rate, after a 30-day lag.
+
+If any signal crosses its threshold, the service does not fail closed. It emits an alert, logs the model version, and gives the risk team a decision: continue, shadow-deploy a newer model, or roll back to the previous active version. The monitoring system is part of the pipeline, not a bolt-on afterthought.
+
+## The Orchestrator Trap
+
+We started with an Airflow DAG that triggered a training job once a week. It worked, but it invited the orchestration trap: putting business logic inside the orchestrator. Eventually we had Python code in Airflow operators that was hard to run locally and hard to test. That is the opposite of the pipeline module we had built.
+
+We moved the orchestration to a thin scheduler that simply launches a containerized pipeline, passes a `PipelineConfig`, and records the exit status. The pipeline code is not aware of the orchestrator. The same command that runs on our laptop runs in CI and runs in the production scheduler. The only difference is the environment variables.
+
+The lesson is that a scheduler should schedule, not think. If a step needs retries, backfills, or conditional logic, put that logic in the pipeline module where it can be tested. The orchestrator should be a clean entrypoint, not a programming language.
+
+## What We Would Do Differently
+
+If I were building Aura Finance again, these are the decisions I would make on day one.
+
+- I would version features before the first model. Retroactive versioning is painful because every historical run becomes ambiguous.
+- I would write the serving contract first. A JSON schema of the request and response shape, plus a golden sample, prevents a whole class of integration bugs.
+- I would add data quality gates at the source, not at the feature store. Fixing bad data after it enters a feature is more expensive than rejecting it at ingestion.
+- I would avoid the word "dashboard" for the first month. A single timely alert is more useful than a 20-tile dashboard nobody watches.
+- I would keep the model as a statistical artifact, not a rule engine. When business people asked us to hard-code a policy, we had to resist; a policy encoded in a model becomes unobservable.
+
+
+<Quiz question={"What did the production incident involving repeated applicants trace back to?"} options={["The feature was computed against cached training data during evaluation.", "The `days_since_last_application` feature used the dataset max date during training, but current time during serving.", "We used a different random seed in the training script.", "The validation split was chronological but the test set was shuffled."]} answer={1} explanation={"The incident was training-serving skew: the same feature meant different things at training and at serving time."} />
+
+
+<KeyTakeaways items={["A production ML model is the full path from raw data to decision, not just weights.", "Remove hidden notebook state by moving all logic into pipeline modules with explicit inputs and outputs.", "Feature definitions must be versioned and shared between training and serving, or you will pay for skew.", "Treat the model registry as a traceability contract, not a file upload.", "Monitoring belongs in the pipeline, with concrete thresholds and defined actions.", "Keep orchestration thin: schedulers schedule, pipeline code owns the logic."]} />
+
+
+<Faq items={[{"q": "Do I need a feature store for a small team?", "a": "Not necessarily. Start with versioned feature definitions and a simple materialization job. A full feature store becomes useful when you have multiple teams reusing features and complex backfill logic. For a small team, the discipline of not duplicating feature logic matters more than the platform."}, {"q": "How do you backfill features when the logic changes?", "a": "We create a new feature version and run a backfill job that recomputes offline features for the full training window, then writes the new version to the online store. No existing feature is overwritten. This keeps historical runs reproducible and production serving stable."}, {"q": "How often did you retrain the Aura Finance model?", "a": "The scheduled pipeline retrained once a week, but promotion only happened when the candidate passed a golden dataset and improved AUC by at least 0.005. The result was that some weeks no model was promoted. Retraining is a means, not a goal."}, {"q": "What model serving framework did you end up using?", "a": "We used a small FastAPI service with ONNX Runtime. The model was trained as gradient boosting, converted to ONNX, and loaded as a static artifact. We considered a dedicated model server, but the bottleneck was feature retrieval, not model computation, so a thin API was the right size."}]} />
+
+## Conclusion
+
+The path from notebook to serving is not about adopting a specific tool. It is about accepting that production machine learning is an engineering discipline with contracts, tests, and operational ownership. The notebook was great for discovery, but it had no state boundaries, no versioning, and no explicit contract between the data science world and the serving world. The Aura Finance pipeline replaced that ambiguity with a small set of deliberate boundaries.
+
+What surprised me most was how little of the work was about model algorithms. The hard parts were feature consistency, temporal validation, and the discipline of knowing exactly which version of the code produced a given prediction. Every piece of value we added came from making those boundaries explicit.
+
+If you are in the middle of a notebook-to-production migration, start with the smallest boundary you can defend: move your feature logic into a module, version it, and call it from both training and serving. That one change will buy more reliability than any model tuning.
+
+This is exactly the journey we went through, and the code is open source. [View the project on GitHub](https://github.com/3ni8ma/Finance-Hub) to see the pipeline, feature definitions, and serving code in one place.

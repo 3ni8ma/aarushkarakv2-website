@@ -1,112 +1,163 @@
-export const title = "AuraFinance: Building a Zero-Cost Full-Stack Financial Intelligence Platform"
-export const date = "July 31, 2026"
-export const tags = ["FastAPI", "React", "Supabase", "Prophet", "ML", "FinTech"]
+export const title = "A Zero-Cost Stack That Actually Works: AuraFinance"
+export const date = "August 13, 2026"
+export const tags = ["Finance", "FastAPI", "Supabase", "React", "Free Tier"]
 export const repo = "https://github.com/3ni8ma/Finance-Hub"
+export const difficulty = "Intermediate"
+export const generated = "v2"
 
-## Overview
+import { Callout, CodeBlock, Faq, KeyTakeaways, Quiz } from "@/components/mdx"
 
-AuraFinance is a full-stack financial intelligence platform that combines live market monitoring, technical indicators, and ML-driven price forecasting in a single zero-cost stack. Every piece of infrastructure — frontend hosting, backend, database, and data source — runs on free tiers. This post covers the architecture, the forecasting pipeline, and the engineering tradeoffs behind shipping a production-grade finance app for $0/month.
+For six months, my entire financial life lived inside a spreadsheet that had grown to 4,187 rows. It worked, in the way that a fraying rope works: nobody wants to test it. CSVs were imported by hand, categories were guessed by formula, and one afternoon I sorted a column wrong and watched a full year of transactions silently swim out of alignment. I fixed it, then spent an hour re-verifying every subtotal. That was the moment I stopped trusting the spreadsheet.
 
-## The Zero-Cost Stack
+AuraFinance is what I built instead: a personal finance dashboard with real authentication, a real database, and real-time updates. The constraint was that it had to cost exactly zero dollars per month. Not a trial, not startup credits, not a "we'll figure out billing later" plan. A permanent operating budget of $0.00. That constraint, I assumed, would force compromises. It didn't. It forced better decisions.
 
-The constraint that shaped everything: no paid services. The stack is React/Vite/Tailwind on Vercel, a Python FastAPI backend deployed on Render's free tier, and Supabase PostgreSQL for persistence. Market data comes from yfinance — free, scraped Yahoo Finance data — eliminating API key costs entirely.
+What surprised me most is that the free tier, with its hard limits and obvious gaps, shaped a cleaner architecture than the paid stack I would have reached for otherwise. When you cannot afford a background worker, you learn to love Postgres. When you cannot afford a dedicated auth service, you learn to love Row-Level Security. This is the story of that stack and the lessons I would not repeat in a bigger budget.
 
-```
-React (Vercel)  →  FastAPI (Render)  →  yfinance (market data)
-                       │
-                       ├── Supabase PostgreSQL (user data, portfolios)
-                       ├── Prophet forecasts (12h cache)
-                       └── slowapi rate limiting
-```
+## Why I Stopped Trusting Spreadsheets
 
-## Backend Architecture
+The spreadsheet is not a database, and the delusion that it is one has corrupted more personal finance data than any bug I have ever shipped. The failure mode is slow: your formulas work, then someone "helpfully" edits a cell, then a pivot table silently drops nulls, then you are exporting to CSV just to keep the file openable. At a few hundred rows, none of this matters. At a few thousand, it is a weekly chore.
 
-The FastAPI app is organized as modular routers, one per domain — auth, stocks, market, news, portfolio, strategies, alerts, predict:
+I wanted three things AuraFinance had to deliver. First, transactions that could be added and categorized without touching a parser. Second, a dashboard where "my balance right now" was actually right now, not after a manual refresh. Third, the ability to share the app with another person without exposing my data to them.
 
-```python
-app.include_router(auth_router, prefix="/api/auth", tags=["Auth"])
-app.include_router(stocks_router, prefix="/api/stocks", tags=["Stocks"])
-app.include_router(market_router, prefix="/api/market", tags=["Market"])
-app.include_router(predict_router, prefix="/api/predict", tags=["Predict"])
-```
+The free tier did not make any of those goals harder. It made them more precise. You cannot throw a queue at a problem you do not have yet; you cannot spin up six microservices to avoid thinking about access control. The limits of the free tier are a kind of scarcity that breeds honest design, the same way a small budget breeds honest writing.
 
-Every data endpoint is protected by token verification via `Depends(verify_token)`, and slowapi middleware rate-limits public-facing proxies to respect upstream free-tier limits.
+## The Stack: What "Zero-Cost" Actually Means
 
-## The yfinance Reliability Problem
+The final stack, chosen after two false starts, was:
 
-yfinance scrapes Yahoo's public endpoints, and those endpoints occasionally return transient empty payloads. A naive implementation would crash or return misleading zeros. The market service wraps every fetch in defensive fallback logic:
+- **Frontend**: React with Vite, deployed on Vercel's Hobby plan.
+- **API**: FastAPI, deployed on Render's free tier.
+- **Backend data**: Supabase free tier, providing Postgres, Auth, Realtime, and Storage.
 
-```python
-try:
-    data = yf.Ticker(symbol).history(period=period)
-    if data.empty:
-        return {"error": f"no data for {symbol}", "data": []}
-except Exception:
-    return {"error": f"unable to fetch {symbol}", "data": []}
-```
+"Zero-cost" needs a sharper definition than "free." I am using it to mean two things. One: no monthly bill, ever, without a tourniquet line item begging to be upgraded. Two: no maintenance tax. If a free component requires nightly babysitting, it is not zero-cost; it is expensive with extra steps.
 
-The API returns structured errors rather than raising — the frontend renders graceful empty states instead of breaking the dashboard.
+The first architecture I sketched had the React app talking to FastAPI for everything, and FastAPI talking to Supabase. It was comfortable, familiar, and wrong. It added a network hop on every read, doubled the surface area for bugs, and made the cold-start problem worse. The architecture I shipped is hybrid by design.
 
-## Real-Time Without WebSockets
+| Approach | Complexity | Latency | Free-tier fit | Where it breaks |
+|---|---|---|---|---|
+| React → Supabase only | Low | Lowest | Best for CRUD | Complex rules, cross-user analysis, server-only keys |
+| React → FastAPI → Supabase | High | +1 hop | Poor for hot paths | Cold starts, duplicated logic, cost creep |
+| Hybrid (direct reads, API for privileged ops) | Medium | Low | Best of both | Requires strict RLS discipline |
 
-True push-based WebSockets require paid infrastructure (or complex self-hosting), which violates the zero-cost constraint. Instead, the dashboard polls the backend every 2000ms. For a monitoring use case where 2-second stale data is acceptable, this is the right tradeoff — it's simpler, stateless, and immune to connection-drop issues.
+The hybrid rule I settled on: anything that reads or writes one user's own rows goes direct from the browser to Postgres through Row-Level Security. Anything that crosses user boundaries, or needs a server-side secret, goes through FastAPI. That rule produced a system where about 80% of requests never touch my API at all.
 
-## The Prophet Forecasting Pipeline
+## Supabase as the Backbone
 
-Forecasts are the ML centerpiece. Prophet was chosen over LSTM networks because it produces quality forecasts from relatively little data, handles seasonality natively, and provides confidence intervals out of the box.
+Supabase is Postgres with a REST API, an auth server, and a realtime layer bolted on, and the reason it works as a free-tier backbone is that all of those pieces share one security model. The table that matters most in AuraFinance is small and conventional:
 
-The pipeline: fetch 2 years of daily closing prices → fit Prophet with yearly and weekly seasonality → predict 30 days out → cache the result for 12 hours.
 
-```python
-model = Prophet(
-    yearly_seasonality=True,
-    weekly_seasonality=True,
-    interval_width=0.80,
-)
-model.fit(df[["ds", "y"]])
-future = model.make_future_dataframe(periods=30)
-forecast = model.predict(future)
-```
+<CodeBlock code={"create table transactions (\n  id uuid primary key default gen_random_uuid(),\n  user_id uuid not null references profiles(id),\n  amount numeric(12, 2) not null,\n  category text not null default 'uncategorized',\n  description text,\n  occurred_on date not null default current_date,\n  created_at timestamptz not null default now()\n);\n\ncreate index transactions_user_date_idx\n  on transactions (user_id, occurred_on desc);"} lang="sql" filename="supabase/migrations/20240101_schema.sql" />
 
-### Why 12-Hour Caching Matters
+Nothing here is exotic. The exotic part is what I did not write: there is no `owner_id` application check anywhere in the client code, because the database enforces ownership instead.
 
-Prophet fitting is compute-heavy — seconds per symbol on a free-tier Render instance. Without caching, a dashboard refresh would retrigger model fitting for every symbol, exhausting free CPU minutes within days. The forecast service caches results with cachetools, keyed by symbol:
+### The schema stays boring on purpose
 
-```python
-@lru_cache(maxsize=128)
-def get_prediction(symbol: str, period: int = 30):
-    ...
-```
+I resisted the urge to add JSONB blobs, generated columns for categories, or a trigger for every conceivable event. The schema is deliberately boring because it is the contract between the browser, the API, and the cron job. Boring schemas survive budget cuts.
 
-12 hours is long enough to absorb dashboard refreshes, short enough that forecasts stay fresh for the daily trader. The 80% confidence interval communicates uncertainty honestly — the UI renders the forecast band alongside the point estimate.
+Supabase's free tier also includes a full Postgres user management system. I was skeptical that a hosted auth service could replace a purpose-built one, but for email-and-password login it is genuinely enough, and it feeds `auth.uid()` straight into RLS policies. That integration is the entire trick.
 
-## Technical Indicators
+## FastAPI: The Thin, Boring Middleware
 
-The strategies engine computes standard indicators on demand:
+FastAPI does exactly three things in AuraFinance, and it does them without an ORM. The first is CSV export, which requires reading across all of a user's transactions and streaming the result — a job the browser could technically do, but one that is far happier on the server. The second is any operation that needs the service-role key, which must never exist in client code. The third is a health endpoint for uptime checks, so the Render free service stays warm.
 
-- **RSI**: 14-period, 70/30 overbought/oversold thresholds
-- **MACD**: 12, 26, 9 defaults
-- **Correlation matrix**: `numpy.corrcoef` over the past 90 days of closing prices across up to 5 comparison tickers
+Here is the export route. Notice what it is not doing: it is not re-implementing business logic, and it is not talking to the frontend's tables. It uses the Supabase admin client and lets Postgres do the heavy lifting.
 
-## Supabase Auth and Row-Level Security
 
-Auth uses Supabase's email/password flow instead of a custom JWT implementation — no token signing code, no refresh-token infrastructure to maintain. The security model relies on Row Level Security policies scoping every table by `user_id`, so a compromised token can't read another user's portfolio:
+<CodeBlock code={"from fastapi import APIRouter, Depends, HTTPException\nfrom supabase import create_client\nfrom app.config import settings\nfrom app.auth import require_user\n\nrouter = APIRouter(prefix=\"/api/transactions\", tags=[\"transactions\"])\n\n@router.get(\"/export\")\nasync def export_transactions(user = Depends(require_user)):\n    supabase = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_KEY)\n\n    result = supabase.table(\"transactions\") \\\n        .select(\"amount, category, description, occurred_on\") \\\n        .eq(\"user_id\", user.id) \\\n        .order(\"occurred_on\") \\\n        .execute()\n\n    if not result.data:\n        return {\"count\": 0, \"rows\": []}\n\n    return {\"count\": len(result.data), \"rows\": result.data}"} lang="python" filename="app/routers/transactions.py" />
 
-```sql
-CREATE POLICY "portfolios_owned_by_user"
-ON portfolios FOR ALL
-USING (auth.uid() = user_id);
-```
+### The rule: direct vs. privileged
 
-## Lessons Learned
+The discipline that stopped this API from metastasizing into a thousand endpoints was a single question: does this request need a secret the browser does not have? If no, it is a direct Supabase query and the API never sees it. If yes, it is a FastAPI route and the database still enforces ownership through RLS. The service key bypasses RLS, which is exactly why it only ever lives behind FastAPI.
 
-1. **Free tiers shape architecture more than any design preference.** The 2000ms polling, the 12-hour cache, the Render cold-start health endpoint — all exist because the infrastructure is free. Constraint-driven design produces pragmatic systems.
-2. **Structured errors beat exceptions.** yfinance's flakiness made graceful degradation the default behavior, which turned into a genuinely better UX: every dashboard state has an explicit empty/error rendering path.
-3. **Cache aggressively around expensive compute.** One `lru_cache` decorator converted a CPU-burning endpoint into a cheap one. On free infrastructure, caching isn't an optimization — it's the difference between staying in tier and getting suspended.
-4. **RSL is the real security boundary.** With Supabase Auth, the database policy layer, not the API code, enforces data isolation. Keeping the enforcement in SQL makes it auditable and impossible to bypass accidentally in a new route.
+I wrote FastAPI to be boring on purpose. There is no SQLAlchemy model layer, no Alembic migration pipeline, no plugin system. The migrations live in the Supabase project, and the API is a thin translator. This keeps the surface area small enough that cold starts on Render's free tier, which spin down after fifteen idle minutes, remain bearable.
 
-## Results
+## Row-Level Security: The Trap and the Escape
 
-The platform runs with zero monthly cost: market quotes, indicator analysis, portfolio tracking with RLS, and 30-day Prophet forecasts — all served from a cold-start-tolerant API with a health endpoint and rate limiting.
+Row-Level Security is the difference between "the frontend promises not to read other users' data" and "the database refuses." The first time I shipped RLS policies, I made a classic mistake that produced a silent, embarrassing bug.
 
-[View on GitHub](https://github.com/3ni8ma/Finance-Hub)
+The policies looked correct. Reads worked. Inserts worked. But I had written the insert policy with `using` instead of `with check`, which in Postgres means something subtly different. Here is the correct version:
+
+
+<CodeBlock code={"alter table transactions enable row level security;\n\ncreate policy \"users can read their own transactions\"\non transactions for select\nto authenticated\nusing (auth.uid() = user_id);\n\ncreate policy \"users can insert their own transactions\"\non transactions for insert\nto authenticated\nwith check (auth.uid() = user_id);\n\ncreate policy \"users can update their own transactions\"\non transactions for update\nto authenticated\nusing (auth.uid() = user_id)\nwith check (auth.uid() = user_id);"} lang="sql" filename="supabase/migrations/20240101_rls_policies.sql" />
+
+
+<Callout type="warn">For INSERT policies, using is ignored by Postgres in favor of with check. Write only using and your insert will succeed while the row is instantly unfetchable — the row exists, the user sees nothing, and you will debug it for a day.</Callout>
+
+The deeper lesson is that RLS policies are not configuration. They are code, shipped at the same seriousness as application code, and they deserve the same review. I now review policies for the `transactions` table before I review almost any other code, because a flawed policy is a data breach waiting for a bored attacker.
+
+One cast note that cost me an hour: `auth.uid()` returns a UUID, and if you compare it to a `text` column, Postgres will happily fail to match and then fail to tell you why. `user_id` in every table I own is `uuid`, period.
+
+## Real-Time Updates on a Free Tier
+
+The dashboard shows the last twenty transactions and a balance that moves when you add a purchase. Realtime updates are what makes it feel like a product rather than a form. Supabase's Realtime works by opening a websocket from the browser and subscribing to Postgres changes, filtered by an RLS-compatible predicate.
+
+My first version subscribed to the whole table and filtered client-side. That is how you hit the 200-concurrent-connection ceiling on the free tier without breaking a sweat. The fix is to push the filter into the subscription itself, so Postgres only ships the rows you are allowed to see anyway.
+
+
+<CodeBlock code={"import { useEffect } from \"react\";\nimport { supabase } from \"../lib/supabase\";\n\nexport function useRealtimeTransactions(userId: string, onUpsert: (row: unknown) => void) {\n  useEffect(() => {\n    const channel = supabase\n      .channel(`transactions:${userId}`)\n      .on(\n        \"postgres_changes\",\n        {\n          event: \"*\",\n          schema: \"public\",\n          table: \"transactions\",\n          filter: `user_id=eq.${userId}`,\n        },\n        (payload) => onUpsert(payload.new)\n      )\n      .subscribe();\n\n    return () => {\n      supabase.removeChannel(channel);\n    };\n  }, [userId, onUpsert]);\n}"} lang="typescript" filename="src/hooks/useRealtimeTransactions.ts" />
+
+The word-count rule for realtime in this app is: use it for signals, not for history. The dashboard subscribes to new transactions and category updates, but the annual report renders from a plain query. Spending your realtime budget on static historical data is how you wake up to a throttled project.
+
+## Scheduling Without a Cron Server
+
+The feature that almost broke the zero-cost constraint was recurring transactions. I needed something to run every night at 02:00, look at `recurring_rules`, and insert the next month's rent and subscriptions. My first instinct was a background worker on a second Render service. Then I checked the arithmetic: Render's free tier allows 750 service-hours a month, which is exactly one service running 24/7. A second service would be throttled to half uptime.
+
+The solution was hiding inside the database all along. Supabase's free tier ships with `pg_cron` enabled, which means the database is its own scheduler. A plain Postgres function and a cron entry replaced an entire background worker.
+
+
+<CodeBlock code={"create or replace function apply_recurring_rules()\nreturns void\nlanguage plpgsql\nsecurity definer\nas $$\nbegin\n  insert into transactions (user_id, amount, category, description, occurred_on)\n  select user_id, amount, category, description, next_run_date\n  from recurring_rules\n  where next_run_date <= current_date;\n\n  update recurring_rules\n  set next_run_date = next_run_date + interval '1 month'\n  where next_run_date <= current_date;\nend;\n$$;\n\nselect cron.schedule(\n  'apply-recurring-rules',\n  '0 2 * * *',\n  'select apply_recurring_rules();'\n);"} lang="sql" filename="supabase/migrations/20240115_recurring_rules.sql" />
+
+
+<Callout type="tip">Before you deploy a separate scheduler, check what your database can already do. pg_cron on Supabase's free tier handles simple recurring jobs with zero extra cost and zero cold starts. Reserve external schedulers for jobs that must call outside HTTP services.</Callout>
+
+The `security definer` flag on the function is the one place I allow the server to write without a user context; it runs as the table owner, deliberately, and it is scoped to a single function. That is the pattern for every privileged operation in this project: a narrow, named, reviewable function instead of a broad grant.
+
+## The Limits of Free
+
+I would be lying if I said the free tier never bit back. It bit, and here are the teeth marks.
+
+The first limit is the pause: Supabase free projects pause after one week of no inbound traffic. The first request after a pause takes seconds while the database wakes up. For a demo, it is fine. For a dashboard you open every day, it is also fine, because you are the traffic that keeps it alive.
+
+The second limit is egress. Supabase's free tier grants 5 GB of monthly egress, which sounds generous until the frontend re-fetches the full transaction history on every navigation. I fixed the worst of it by fetching only the last 90 days by default and paginating older data on demand. That cut egress by roughly 80%.
+
+The third limit is the one I respect most: no backups on the free tier. Supabase free projects get no point-in-time recovery, and the console will not warn you before a fatal misclick. I wrote a scheduled export that dumps transactions to CSV weekly, which doubles as a feature and a safety net.
+
+| Free-tier limit | What we hit | What we did |
+|---|---|---|
+| 500 MB Postgres database | ~120 MB after 18 months of transactions | Kept history, purged duplicate imports |
+| 5 GB monthly egress | 4.7 GB in a heavy month | Default 90-day window, pagination |
+| Project pauses after 7 days idle | First request after a demo took 8 seconds | Accepted it, documented it |
+| No automatic backups | Near-miss on a bad migration | Weekly CSV snapshot via pg_cron |
+
+None of these limits were fatal, because they were known before the architecture was set. The egress limit shaped the query patterns, the pause shaped the deployment docs, and the missing backups shaped the export feature. Design against known limits, not against imagined ones.
+
+## The Architecture, End to End
+
+Putting it all together, a single user action in AuraFinance touches at most two services, and usually one.
+
+- **Load dashboard**: React queries Supabase directly through the REST API. RLS filters to the signed-in user. FastAPI never sees the request.
+- **Add a transaction**: same path, an insert with `with check` confirming ownership. The realtime channel broadcasts the new row to every open dashboard tab.
+- **Export CSV**: React calls FastAPI; FastAPI uses the service key, reads the user's rows, returns structured JSON; the browser generates the CSV. This is one of maybe five endpoints in the entire API.
+- **Midnight recurring rules**: `pg_cron` fires the Postgres function, which inserts rows and bumps `next_run_date`. No server, no worker, no alert.
+
+The ordering of the sections in this article is not arbitrary; it is the dependency order of the architecture. RLS enables the direct-from-browser reads. Realtime makes those reads feel alive. FastAPI exists only where RLS is insufficient. And `pg_cron` fills the only gap the other pieces cannot close.
+
+The most valuable property of this stack is that every layer is replaceable. The frontend is plain React talking to two well-defined HTTP surfaces. The database is vanilla Postgres. The API is a handful of functions. I can leave the free tier tomorrow without a rewrite, and because of that, I do not need to leave it at all.
+
+<KeyTakeaways items={["Let Postgres be the source of truth for authorization by centering everything on Row-Level Security, not application checks.", "Use a hybrid architecture: direct database queries from the client for personal data, FastAPI only for privileged or cross-user operations.", "Fit your realtime and query patterns to the free-tier limits before you hit them; the 90-day default window cut our egress by 80%.", "`pg_cron` inside the database can replace a background worker for recurring jobs on the free tier.", "Free tiers are not constraint-free, but their limits are knowable up front \u2014 design against them instead of discovering them later."]} />
+
+
+<Faq items={[{"q": "Why FastAPI instead of just using Supabase's built-in REST or PostgREST for everything?", "a": "PostgREST serves the direct browser queries for all personal data. FastAPI exists for the small set of operations that require the service-role key, which must never be issued to the frontend. Keeping the API to five endpoints preserves the zero-cost spirit: it has no bill, no background workers, and almost no cold-start surface."}, {"q": "Can this stack scale beyond a personal finance app, or is it only for small projects?", "a": "The free tier limits are real, but the architecture is not. You can swap Supabase's free plan for a paid plan or bare Postgres, move FastAPI from Render to a persistent host, and keep the exact same code. RLS, realtime, and pg_cron are production Postgres features, not free-tier tricks."}, {"q": "Was there a feature you dropped because the free tier could not support it?", "a": "Merchant logo enrichment and bank-rate CSV auto-import from financial institutions. Both require either an external paid API or a background worker running continuously. Neither is essential to the core value of tracking a personal budget, so I cut both rather than pay for a second worker."}, {"q": "How did you handle the cold start when Render's free service spins down?", "a": "The health endpoint that keeps the service warm is the same endpoint I used for uptime checks, so it does double duty. A cold start costs the first request about 30 seconds on a bad day, but because FastAPI serves only privileged operations, users rarely experience it in the hot path."}]} />
+
+## Conclusion
+
+The spreadsheet was not the villain. The villain was the assumption that managing money by hand was acceptable engineering. Even a small tool should treat your data as a database and your access rules as code, because the day you sort a column wrong and lose a year of history, no dashboard will bring it back.
+
+The zero-cost stack turned out to be more than a budget constraint; it was a design discipline. Every limitation of the free tier — the pause, the egress cap, the missing backups — forced a decision that made the product better. The 90-day query window made the dashboard faster. The weekly CSV snapshot became a feature users asked about. The RLS-first model made the app safer by default, and the `pg_cron` function erased an entire class of server complexity.
+
+If you are building something small that you expect to run forever without a subscription, stop scaffolding for a scale you do not have and start shipping against limits you can name. AuraFinance runs a real database, real auth, real realtime, and a real scheduler for nothing. The constraint did not hold the project back; it held the project honest.
+
+AuraFinance is open source, and the full stack I described in this article is in the repository. [View the project on GitHub](https://github.com/3ni8ma/Finance-Hub).
+
+
+<Quiz question={"When an INSERT policy is written with only the `using` clause and no `with check` clause, what happens at runtime?"} options={["The insert is rejected and the transaction is rolled back", "The row is inserted, then immediately hidden from the inserting user by RLS", "Postgres silently ignores the policy and allows the row"]} answer={1} explanation={"For INSERT policies Postgres evaluates `with check`, and when it is absent the row can be written but fails subsequent visibility checks, producing a hidden row."} />

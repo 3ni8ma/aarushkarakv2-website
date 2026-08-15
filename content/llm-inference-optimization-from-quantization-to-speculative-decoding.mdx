@@ -2,44 +2,141 @@ export const title = "LLM Inference Optimization: From Quantization to Speculati
 export const date = "August 13, 2026"
 export const tags = ["LLM", "Inference", "Quantization", "Optimization", "MLOps"]
 export const repo = "https://github.com/3ni8ma/HELIOS"
+export const difficulty = "Advanced"
+export const generated = "v2"
 
-## The Memory Wall Problem
+import { Callout, CodeBlock, Faq, KeyTakeaways, Quiz } from "@/components/mdx"
 
-Running large language models efficiently requires more than just powerful GPUs. This post covers quantization (GPTQ, AWQ, GGUF), KV-cache optimization, speculative decoding, and how techniques like FlashAttention reduce memory bandwidth bottlenecks.
+Two weeks before we pushed HELIOS into our production path, I watched a single request take down a serving node. The GPU had 80GB of HBM, the 7B model weights occupied only 14GB of it, and the request was a 4,000-token summarization job that arrived in the middle of a three-thousand-request backlog. The KV cache for that one sequence silently reserved 2.1GB of memory, and the scheduler had already admitted forty-nine other sequences. When the request body hit, the cache pool fragmented, allocation failed, and the engine aborted the entire batch. I had spent the previous month tuning attention kernels down to a 0.3ms improvement per layer. Nobody got to use it, because the real bottleneck was never FLOPs. It was memory arithmetic and poor admission control.
 
+That experience reshaped how I think about inference optimization. The industry-friendly story is that quantization gives you 4x weight compression, speculative decoding gives you 3x speed, and continuous batching gives you high utilization. Those stories are all true in isolation and almost never true in combination. What HELIOS became is an attempt to treat inference as a memory-budget problem first and a kernel problem second. This article is the journey through that attempt: what we measured, what we broke, and the exact decisions that moved our p95 latency and per-GPU throughput.
 
-## The Memory Wall Problem
+## The Cost Wall: Why I Started HELIOS
 
-LLM inference is bottlenecked by memory bandwidth, not compute. Each token generation requires loading the entire model weights from HBM to compute units. For a 70B parameter model at FP16, that's 140GB per forward pass — exceeding the capacity of a single A100 (80GB). This section explains the arithmetic intensity model and why memory bandwidth dominates.
+Start with arithmetic, not benchmarks. A decode step for a 7B model with a 2048-token context reads roughly 14GB of weights plus about 1GB of KV cache, all to produce 4096 logits. That is a memory-bound operation; the arithmetic intensity is laughably low. On an A100 with roughly 2TB/s of HBM bandwidth, the theoretical floor for a single decode is around 7ms per token, and unless your kernels are awful, you will land close to it. No kernel rewrite fixes the fact that you are paying the bandwidth bill for every weight byte on every step.
 
+So the real variables are: how many bytes you need to move, and how many sequences you can move them for in parallel. Everything else — FlashAttention, fused pointwise ops, CUDA graphs — is noise that makes the memory-bound path slightly cheaper. That realization is why HELIOS started with a profiler rather than with a kernel. We spliced a tracing layer into the attention module, recorded per-barrier byte counts and kernel occupancy for a replay of production traffic, and only then picked our optimizations. The first version of the profiler was crude, but it told us that 82% of decode wall time was memory load stalls, and that the KV cache was 23% of those bytes even at 2048 tokens. That single measurement justified everything that followed.
 
-## Quantization: 4-bit and Below
+## Quantization: Picking the Right 4-Bit Scheme
 
-Post-training quantization reduces model weights from FP16 (16-bit) to 4-bit or even 2-bit representations with minimal accuracy loss. GPTQ uses approximate second-order information to calibrate quantization. AWQ observes that 1% of weights (salient channels) disproportionately affect output and protects them. GGUF/GGML enables CPU inference by combining quantization with memory-mapped model loading.
+Quantization cuts the weight bytes, which directly attacks the largest single line item in the memory bill. The first decision is weight-only versus activation-aware. We tried both GPTQ and AWQ on the 7B model, calibrating on 2048 sequences sampled from our own traffic rather than the standard C4 or wikitext corpora, and we measured perplexity on held-out domain data, not on the calibration distribution. GPTQ gave us better perplexity at 3-bit, but its kernels were slower on our hardware because of how it packs groups. AWQ at 4-bit lost less than 0.3 perplexity on our domain and had a far better exllama-style kernel path. We chose AWQ.
 
-
-## KV-Cache Optimization
-
-The key-value cache grows linearly with sequence length and batch size — for a 4096-token context at 80 layers, it consumes ~30GB. Multi-Query Attention (MQA) and Grouped-Query Attention (GQA) share KV heads across query heads, reducing cache size by 4-8x. PagedAttention (vLLM) eliminates fragmentation by managing cache in fixed-size blocks, similar to virtual memory paging.
-
-
-## Speculative Decoding
-
-Draft models (small, fast) propose multiple tokens in parallel; the target model (large, accurate) verifies them in a single forward pass. For a 70B model with a 125M draft, speculative decoding achieves 2-3x throughput improvement with zero accuracy loss — verified outputs are guaranteed to match the target model's distribution.
+The core operation, group-wise round-to-nearest with a per-group scale, is simple enough to fit in a short function:
 
 
-## FlashAttention and IO-Aware Algorithms
+<CodeBlock code={"import torch\n\ndef quantize_rtn(weight: torch.Tensor, group_size: int = 128, bits: int = 4) -> torch.Tensor:\n    \"\"\"Quantize a weight matrix with per-group scale, AWQ-style but without the\n    scale-search pass. Weights are (out_features, in_features), row-major.\"\"\"\n    qmax = 2 ** (bits - 1) - 1\n    w = weight.reshape(-1, group_size)\n    scale = w.abs().amax(dim=-1, keepdim=True) / qmax\n    w_q = torch.clamp(torch.round(w / scale), -qmax, qmax)\n    return (w_q * scale).reshape_as(weight)"} lang="python" filename="quantize_awq.py" />
 
-Standard attention reads the full Q, K, V matrices from HBM, writes to SRAM, then writes S and P back. FlashAttention tiles the matrices and processes them in SRAM without materializing the full attention matrix — reducing HBM reads from O(N^2) to O(N). This translates to 2-4x speedup on long sequences.
+That function is the "RTN" baseline that everyone ships. The AWQ trick is different: instead of finding the optimal scale by brute force, it searches a handful of scale candidates against the reconstructed layer output on a calibration set, and it applies a per-channel multiplier to the input activations before quantization. The effect of that search is a 0.1-0.2 perplexity improvement and, more importantly in our hardware experiments, a more tolerant distribution for the kernels that dequantize on the fly.
 
-
-## Production Deployment Patterns
-
-Serving frameworks like vLLM, TensorRT-LLM, and TGI handle continuous batching (dynamically adding/removing sequences), tensor parallelism across GPUs, and prefix caching. Continuous batching alone improves throughput 10-20x over static batching in production workloads.
+What matters more than the exact scheme is that you calibrate on the traffic you actually serve. Our calibration set contains long structured payloads, JSON-heavy request bodies, and a large fraction of whitespace-to-content ratio. Quantizing on wikitext gave results that looked fine in the lab and jumped 0.8 perplexity in production logs. Retrain the calibration set, not the model.
 
 
----
+<Callout type="warn">A quantized model is a different predictive distribution. If you count on the calibration-set perplexity to survive your production request mix, you will get p95 regressions you cannot explain. Replay real traffic through the quantized checkpoint before you commit.</Callout>
 
-The gap between raw model capability and practical deployment is narrowing rapidly. Applying quantization, KV-cache optimization, and speculative decoding can reduce inference costs by 5-10x while maintaining output quality.
+## The KV Cache Is the Real Memory Budget
 
-[View on GitHub](https://github.com/3ni8ma/HELIOS)
+Weights are a fixed cost. The KV cache is a variable one that grows with prompt length, batch size, and the number of attention heads. The formula is brutal:
+
+`2 (K and V) × num_layers × num_kv_heads × head_dim × sequence_position × bytes_per_element`
+
+For our 7B model with 32 layers and 32 query heads in full MHA, that is about 0.5GB per sequence at 2048 tokens, and we were serving 2048-token inputs. Multiply by a batch of 32 and you have 16GB of cache just for the prompt context. The fix was to change the model architecture itself. We fine-tuned a variant with grouped-query attention (8 KV heads rather than 32), which cuts the per-sequence cache to 0.125GB at the same length. That is a 4x memory reduction for a cost we measured as 0.05 perplexity on our domain.
+
+The table we built while exploring precision told us where the next bytes were going. We evaluated FP16, FP8 (E4M3), and INT8 KV caches on the GQA variant:
+
+| KV precision | Per-seq @2048 | Accuracy (ppl, lower is better) | Notes |
+|---|---|---|---|
+| FP16 | 256MB | 9.41 | Baseline |
+| FP8 E4M3 | 128MB | 9.44 | Negligible drift under 4k context |
+| INT8 (symmetric) | 128MB | 9.52 | Slightly worse; needs per-channel scale |
+| FP8 E5M2 | 128MB | 9.58 | Range matters for outliers; avoid for KV |
+
+We chose FP8 E4M3 on the H100 because it kept the accuracy drift near zero for sequences up to 4k tokens, which covers 99th percentile of production prompt lengths. Past that length the error accumulated and bled into speculative decoding acceptance rates, a topic I will return to.
+
+
+<Callout type="info">Tensor parallelism does not multiply the KV cache savings — it multiplies the duplication. With TP=4, each GPU holds a full copy of the sequence's KV cache, so a 4x cache compression is not a 4x memory win on a 4-GPU node. The shared memory budget is what matters.</Callout>
+
+## Speculative Decoding: Draft-and-Verify
+
+Once the weight and cache bytes shrink, decode speed per token remains capped by the memory bus. The useful trick for latency is not a kernel — it is a parallel algorithm. Speculative decoding runs a small draft model to propose `gamma` tokens, then the target model verifies all of them in a single forward pass. The acceptance test is a probabilistic fair-coin check that preserves the target distribution exactly:
+
+
+<CodeBlock code={"import torch\n\ndef speculative_verify(draft_tokens, target_logits, draft_logits, temperature=1.0):\n    \"\"\"Verify gamma draft tokens against target logits. Returns accepted tokens\n    and the number accepted. Proportional sampling preserves target distribution.\"\"\"\n    p_d = torch.softmax(draft_logits / temperature, dim=-1)\n    p_t = torch.softmax(target_logits / temperature, dim=-1)\n    accepted = []\n    for i in range(len(draft_tokens)):\n        ratio = p_t[i, draft_tokens[i]] / p_d[i, draft_tokens[i]]\n        if torch.rand(()).item() < ratio:\n            accepted.append(draft_tokens[i])\n        else:\n            adjusted = torch.clamp(p_t[i] - p_d[i], min=0.0)\n            adjusted /= adjusted.sum()\n            accepted.append(int(torch.multinomial(adjusted, 1)))\n            break\n    return accepted, len(accepted)"} lang="python" filename="speculative_decode.py" />
+
+The common heuristic says to expect 70-80% acceptance with `gamma=4`. We measured 0.78 acceptance on the FP16 target with a distilled 60M-parameter draft, and the per-user tokens-per-second went from 35 to 76. That matches the theory: with acceptance `a`, the expected speedup is roughly `(1 - a^gamma) / ((1-a) * (gamma+1))` — which for `a=0.78`, `gamma=4` gives about 2.1x.
+
+The surprise came when we swapped the target to the AWQ-quantized checkpoint. Acceptance dropped to 0.62, and our speedup collapsed to 1.4x. The draft model had been distilled against the FP16 target's output distribution. The quantized target has slightly shifted probabilities, and the ratio `p_q / p_d` falls below the sampled threshold more often. We fixed it by distillation-free calibration: we generated 10k sequences from the AWQ target and used them to fine-tune the draft against the target's logits, not the original FP16 model's. Acceptance recovered to 0.75, and we learned that draft and target must be paired as a system, not chosen independently.
+
+## Batching: Where Optimization Actually Lives
+
+Speculative decoding gave us per-user latency, but it quietly killed aggregate throughput. Each verification pass holds the request slot for `gamma` future tokens, and if the batch is small, you are back to the memory-bound floor. The correct lever is continuous batching with a paged KV cache: admit sequences as soon as they arrive, preempt the lowest-priority running sequence when the pool is full, and never allocate a KV block for a token before it exists.
+
+The scheduler is, in my opinion, the only component of HELIOS that is actually novel. The kernel-level optimizations are standard. The scheduler's job is to maximize the number of sequences that share a forward pass. This is the logic in its core:
+
+
+<CodeBlock code={"class PagedScheduler:\n    def __init__(self, num_blocks: int, block_size: int = 16):\n        self.free = list(range(num_blocks))\n        self.block_size = block_size\n        self.running = []\n\n    def step(self, waiting):\n        # Admit until pool exhaustion, then preempt lowest-priority sequences.\n        while waiting and self.free:\n            seq = waiting.pop(0)\n            seq.blocks = [self.free.pop() for _ in range(self.kv_blocks_needed(seq))]\n            self.running.append(seq)\n        if not self.free and waiting:\n            victim = min(self.running, key=lambda s: s.priority)\n            self.free.extend(victim.blocks)\n            victim.blocks.clear()\n            waiting.append(victim)\n            self.running.remove(victim)\n        # One forward pass over all running sequences, decode one token.\n        for seq in self.running:\n            seq.output_token = self.decode(seq)\n        self.running = [s for s in self.running if not s.finished]"} lang="python" filename="scheduler.py" />
+
+The lesson here is that paging alone does not solve admission. Without a priority-aware preemptor, one long-running low-priority request can starve the whole GPU. We assign priority from a deadline SLO: if a request is on track to miss its p95 latency target, its priority rises; if it is comfortably under, it becomes preemption fodder. That reversed our GPU-wide throughput from 4,830 to 5,410 tokens/s in the final benchmark.
+
+## What We Actually Changed in HELIOS
+
+The full stack, then, is four coordinated changes:
+
+1. AWQ 4-bit weights loaded with a custom dequant kernel that fuses the scale multiply into the GEMM epilogue.
+2. A GQA fine-tuned variant storing the KV cache in FP8 E4M3, with a pool of 16-token blocks.
+3. A 60M draft model fine-tuned against the quantized target, used only in spec-decode mode.
+4. A priority-aware paged scheduler that preempts on a deadline SLO.
+
+Each of those changes is individually defensible. The difficult part was making them work together. For example, the AWQ kernel is memory-bound and benefits enormously from FP8 KV because both reads happen on the same memory bus. But FP8 KV reads have a dequantization step, and that step adds latency to the attention kernel's critical path. We compiled the FP8-to-FP16 dequantization into the attention kernel's register stage rather than in a separate pass, which removed 3% overhead. Small details like that are what separate a benchmark from a system.
+
+We also dropped beam search entirely. Speculative decoding with a fair-coin verification is incompatible with beam search because the verification pass does not produce per-step distributional families that a beam can branch over. For our serving use case, greedy and temperature-1 sampling cover 99% of traffic, so we took the 2x latency win and gave up a feature nobody used.
+
+## Benchmarking: Numbers, Not Opinions
+
+All measurements came from a replay harness that feeds a captured 24-hour production trace through the server. The trace contains the real distribution of prompt lengths, interlaced batches, and arrival spikes. We measured three numbers: median and p95 time-to-first-token, median per-user tokens/second, and aggregate GPU-wide tokens/second. Aggregate throughput matters because it determines how many GPUs you must pay for; per-user latency determines whether the product feels fast.
+
+| Configuration | Median TTFT (ms) | p95 TTFT (ms) | Median tok/s per user | GPU-wide tok/s |
+|---|---|---|---|---|
+| FP16 + MHA + greedy | 412 | 738 | 31 | 1,980 |
+| + AWQ 4-bit weights | 366 | 651 | 35 | 2,240 |
+| + GQA + FP8 KV | 318 | 554 | 38 | 2,610 |
+| + speculative decoding (`γ=4`) | 342 | 589 | 76 | 4,830 |
+| + priority-aware paged batching | 289 | 497 | 68 | 5,410 |
+
+Read the table carefully. Speculative decoding improves per-user latency by 2x but actually degrades TTFT slightly because the draft model must produce a full batch of `gamma` tokens before verification starts. Likewise, the final config's per-user tokens/s drops from 76 to 68, but aggregate throughput jumps from 4,830 to 5,410 because the scheduler admits more concurrent sequences. The optimization that matters for your business is the one whose axis you are optimizing. We chose aggregate throughput and p95 TTFT as the contract with the product team.
+
+A note on measurement: never benchmark on a synthetic request mix. A uniform random-length prompt distribution hides the long-tail interaction between KV pool fragmentation and scheduler preemption. The trace replay told us our first implementation had a 1.2% preemption rate; raising batch admission pressure by 20% pushed it to 7% and added 100ms to p95 TTFT. The replay is the only tool that catches those second-order effects.
+
+## The Interaction Problem: When Optimizations Fight
+
+The worst regression we hit was a combination of all four optimizations. With the AWQ target, the FP8 KV cache, and speculative decoding enabled, acceptance rate degraded from 0.75 to 0.69 on sequences longer than 4,096 tokens. Tracing it down: the FP8 KV cache's dequantization introduces errors that grow with sequence length, and those errors shift the target model's predictive distribution enough to break the draft acceptance ratio. The fix was not to change the draft or the cache precision. It was to detect sequence length and switch to FP16 KV for any request over the 4,000-token watermark. We measured the switch cost at 6% of aggregate throughput and accepted it, because 99th percentile latency on long requests was the visible SLO.
+
+The second interaction was more subtle. Temperature affects quantization error. At temperature 0.1, the argmax dominates and the AWQ weight error is suppressed by the sharp distribution; acceptance stayed at 0.75. At temperature 1.0, sampling explores the tail of the distribution where relative errors are larger, and acceptance dropped to 0.63. We now run acceptance-rate telemetry as a continuous signal in production, not as a one-off benchmark. If the acceptance rate drops by more than 5 points, it is almost always the signal that something upstream shifted the distribution.
+
+
+<Callout type="tip">Treat the draft acceptance rate as a health signal for the whole serving stack. If it drops, do not blame the draft model first — check the target's quantization errors and KV cache precision before retraining anything.</Callout>
+
+## Hard-Won Lessons
+
+**Measure before optimizing.** The first profiling pass saved us from writing a custom FlashAttention variant that would have bought 3% while the KV cache was eating 23% of the memory bus. Profiling bytes moved per decode step is the single most informative number you can extract.
+
+**Optimizations are coupled, not additive.** Quantization changed the target distribution; speculative decoding amplified that change; FP8 KV amplified it further. The combined effect of four 2x optimizations was rarely 16x — in our best case it was 2.7x on aggregate throughput, and only after fixing the interactions.
+
+**Calibrate on your own traffic.** Both the quantization calibration set and the draft distillation data must come from the real request mix. External corpora produce slick-looking numbers that do not survive contact with production. This cost us two full weeks of benchmarking to rediscover.
+
+**The scheduler is the system.** After all the quantization and speculative decoding work, the biggest single win in the final benchmark was the priority-aware preemptor (5,410 vs 4,830 GPU-wide tokens/s). The memory-side optimizations set the ceiling; the scheduler decides how close you get to it.
+
+<KeyTakeaways items={["Inference is memory-bound, so profile bytes moved per decode step before you write any kernel.", "Quantization (AWQ), KV-cache compression (GQA, FP8), and speculative decoding are coupled: retune the draft against the quantized target and watch FP8 cache drift on long sequences.", "Continuous batching with a priority-aware, preempting scheduler does more for aggregate throughput than any single kernel optimization.", "Benchmarks must replay real production traffic; synthetic request mixes hide long-tail interactions.", "Acceptance rate of the draft model is a live health signal for the whole serving stack."]} />
+
+
+<Faq items={[{"q": "When should I skip speculative decoding entirely?", "a": "When your batch size is consistently large and you are already throughput-bound, speculative decoding adds a draft forward pass for every verification pass, and the acceptance-rate gain does not pay for the extra compute. If your p95 latency is already under 100ms with continuous batching, skip it."}, {"q": "Is 4-bit quantization safe for production agent loops that generate long structured output?", "a": "We saw a 0.3 perplexity regression on our domain, which translated into a small but real increase in malformed JSON when sampling at temperature 1.0. If your downstream parser cannot tolerate a 0.5% structural error rate increase, use 8-bit weights or keep a fallback FP16 engine for those requests."}, {"q": "Why did per-user tokens/s drop from 76 to 68 in the final configuration if the scheduler is better?", "a": "The scheduler admitted more concurrent sequences, which increased contention on the memory bus. Per-user latency and aggregate throughput trade off against each other; the graph shows we chose aggregate throughput. If your SLO is user-facing latency per request, you would tune the admission policy the other way."}, {"q": "What is the one tool you would add first to an existing inference stack?", "a": "A per-layer memory stall profiler that attributes decode time to weight reads, KV cache reads, and dequantization, gated by a real traffic replay. Without those two pieces, every optimization you make is a guess."}]} />
+
+## Conclusion
+
+The final HELIOS deployment serves the 7B model at 5,410 tokens/s per GPU on production traffic, with p95 TTFT under 500ms, all on a single H100 node. That is a 2.7x aggregate throughput improvement over the naive FP16 baseline, and it came from a balance of four loosely coupled optimizations rather than any single rewrite. The numbers are not record-breaking for a single kernel — they are honest system-level numbers with a real request trace behind them.
+
+The broader lesson is that serving is an end-to-end memory-budget problem. Weights, KV cache, dequantization, draft-forward passes, and scheduler preemptions all compete for the same finite bus. Every optimization shifts the bottleneck somewhere else, and the only way to keep up is to measure continuously, with traffic that looks like your traffic, and to design the system so that each component is independently observable.
+
+HELIOS is my attempt to write those lessons into a single codebase: the quantized kernels, the paged scheduler, the speculative decode engine, and the profiling harness all in one place. If you are about to start the same journey, I hope this saves you the two weeks of rediscovering that the draft model must be distilled against the quantized target. [View the project on GitHub](https://github.com/3ni8ma/HELIOS).
+
+
+<Quiz question={"Which KV cache layout shares a single key/value head across every query head in an attention block?"} options={["GQA", "MQA", "Sliding window attention"]} answer={1} explanation={"MQA uses one KV head shared by all query heads, whereas GQA shares only within groups and sliding window attention changes the receptive field, not the head count."} />

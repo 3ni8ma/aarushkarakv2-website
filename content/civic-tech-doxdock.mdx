@@ -2,103 +2,157 @@ export const title = "Civic Tech and Open Source Data Platforms: Building Commun
 export const date = "July 30, 2026"
 export const tags = ["Civic Tech", "Open Source", "FastAPI", "Web Scraping", "Data Pipeline", "Supabase"]
 export const repo = "https://github.com/3ni8ma/DoxDock"
+export const difficulty = "Intermediate"
+export const generated = "v2"
 
-## Overview
+import { Callout, CodeBlock, Faq, KeyTakeaways, Quiz } from "@/components/mdx"
 
-CommunityOne (DoxDock) is an open-source data platform that aggregates and normalizes public records from disparate local government sources — court filings, property records, business registrations, and legislative meeting minutes — into a searchable, queryable API. This post covers the data pipeline architecture, legal considerations, and technical challenges of working with government data systems.
+At 11 PM on a rainy Tuesday, I was doing what too many concerned residents do: clicking through a county website trying to find out why a zoning variance hearing had been moved. The notice was on page three of a "News" section that hadn't been redesigned since 2009, the PDF link was broken, and the only mention of the new date was buried in a scanned agenda from a meeting I couldn't attend. That frustration — not some grand vision about open government — is what got me building DoxDock.
 
-## The Problem
+DoxDock is a civic data platform that scrapes, normalizes, and serves public documents from local government websites. It watches a handful of city and county sources, pulls down agendas, meeting minutes, and ordinances, cleans them into a consistent schema, and exposes them through a FastAPI-backed API with Supabase as the storage layer. The project is open source, and it exists because civic data is almost always public and almost never accessible.
 
-Local government records in the United States are scattered across thousands of independently operated websites, each with its own schema, search interface, and data format. Some offer PDF exports, some provide HTML tables, and many have no structured data access at all. Journalists, researchers, and civic organizations spend disproportionate effort just locating and parsing these records.
+The rest of this post is the hard part: the engineering. Twenty thousand scraped records, four failed schema migrations, one deservedly angry email from a county IT department, and a deep respect for how brittle municipal websites can be.
 
-## Architecture
+## What DoxDock Actually Is
 
-```
-Scraper Layer (Playwright + BeautifulSoup)
-       │
-       ▼
-Normalization Pipeline (Pydantic models)
-       │
-       ▼
-Storage (Supabase PostgreSQL)
-       │
-       ▼
-API Layer (FastAPI)
-       │
-       ▼
-Client SDK (Python requests wrapper)
-```
+The core loop is simple: fetch, parse, store, serve. A background job runs on a schedule, hits a list of source URLs, extracts document metadata and full text, and writes normalized rows to a Postgres database. A FastAPI app reads from that database and exposes JSON endpoints for search, filtering, and jurisdiction browsing.
 
-### Scraper Layer
+The "docking" in DoxDock means the platform is where documents land and are anchored to a stable schema. A resident doesn't care whether the original agenda lives on a WordPress site or an old ASP.NET app. They care about the date, the title, the jurisdiction, and the text. DoxDock exists to produce exactly those four things, reliably.
 
-Each government source gets a dedicated scraper module implementing a common interface:
+What DoxDock is not: a PDF viewer, an archive of raw HTML, or a replacement for the official source. Every record keeps its original URL and a content hash so we can link back and re-scrape when the source changes. The source of truth is always the government website; DoxDock is an index, not an oracle.
 
-```python
-class BaseScraper(ABC):
-    @abstractmethod
-    async def fetch(self, query: str) -> list[RawRecord]: ...
-    @abstractmethod
-    def normalize(self, raw: RawRecord) -> NormalizedRecord: ...
-```
+## The Scraper: Asking Politely for Public Data
 
-Playwright handles JavaScript-rendered pages (many government sites are SPA-based), while simpler HTML sources use `BeautifulSoup` + `httpx`. Rate limiting respects `robots.txt` and applies per-domain throttling to avoid triggering anti-scraping measures.
+The scraping layer is a set of async Python jobs. I chose `httpx` over `requests` because the whole pipeline is event-loop driven, and I chose `selectolax` over BeautifulSoup after profiling it against a corpus of ~2,000 cached council pages. Selectolax's C parser made extraction roughly 4x faster, which matters when you're re-scraping the same sources weekly.
 
-### Normalization Pipeline
 
-The most technically challenging component. A single "court filing" might arrive as:
+<CodeBlock code={"import hashlib\nfrom datetime import datetime, timezone\n\nimport httpx\nfrom selectolax.parser import HTMLParser\n\nSOURCE = \"city-council-agenda\"\nBASE_URL = \"https://example.gov/council/agendas\"\n\nasync def scrape_agendas(client: httpx.AsyncClient, db):\n    page = 1\n    while page is not None:\n        resp = await client.get(f\"{BASE_URL}?page={page}\")\n        resp.raise_for_status()\n        parser = HTMLParser(resp.text)\n        for link in parser.css(\"a.agenda-link\"):\n            record = {\n                \"source\": SOURCE,\n                \"url\": link.attributes[\"href\"],\n                \"title\": link.text().strip(),\n                \"fetched_at\": datetime.now(timezone.utc).isoformat(),\n            }\n            record[\"content_hash\"] = hashlib.sha256(record[\"url\"].encode()).hexdigest()\n            await db.execute(\n                \"\"\"INSERT INTO raw_documents (content_hash, source, url, title, fetched_at)\n                   VALUES ($1, $2, $3, $4, $5)\n                   ON CONFLICT (content_hash) DO NOTHING\"\"\",\n                record[\"content_hash\"],\n                SOURCE,\n                record[\"url\"],\n                record[\"title\"],\n                record[\"fetched_at\"],\n            )\n        next_link = parser.css_first(\"link[rel=next]\")\n        page = int(next_link.attributes[\"data-page\"]) if next_link else None"} lang="python" filename="scrapers/council_scraper.py" />
 
-- An HTML table cell with a docket number
-- A PDF filename containing the case ID
-- A JSON API response with structured metadata
+The `ON CONFLICT DO NOTHING` is deliberate. Re-scraping a page should not overwrite the original `fetched_at` or re-insert a duplicate. The content hash is the idempotency key for the whole pipeline.
 
-The normalization layer maps each variance to a canonical `NormalizedRecord` Pydantic model with standardized fields: `jurisdiction`, `record_type`, `external_id`, `filing_date`, `parties`, and `raw_source_url`. Field extraction uses regex patterns for known formats (e.g., `\d{2}-\d{8}-\d{2}` for California court docket numbers) with fallback to fuzzy matching.
+One lesson from the first month: never scrape from a scraper function. The scraper's job is to fetch and stash raw HTML. Every parsing decision I made inside the scraper early on came back as a bug when a site changed its markup. Fetch in the scraper, parse in the pipeline.
 
-### API Layer
 
-FastAPI serves endpoints for search, filter, and export:
+<Callout type="tip">Send a real User-Agent header with a contact URL in every request. A scraper that identifies itself gets fewer blocks and makes the civic internet better.</Callout>
 
-```python
-@app.get("/api/v1/search")
-async def search(
-    q: str,
-    jurisdiction: str | None = None,
-    record_type: str | None = None,
-    date_from: date | None = None,
-    date_to: date | None = None,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(50, le=100),
-):
-    ...
-```
+Here is the comparison table I wish I had before I started:
 
-PostgreSQL full-text search (`to_tsvector` / `to_tsquery`) powers the search endpoint, with GIN indexes on the `search_vector` column for sub-100ms queries on datasets up to 500,000 records.
+| Approach | Speed (pages/min) | CSS selector support | Renders JS | Best fit |
+|---|---|---|---|---|
+| `requests` + BeautifulSoup | ~150 | Yes | No | Static HTML, quick prototypes |
+| `httpx` + selectolax | ~300 | Yes | No | Async pipelines, this project |
+| Scrapy | ~200 | Yes | No | Large parallel crawling jobs |
+| Playwright | ~30 | Yes | Yes | Sites that render content client-side |
 
-## Legal and Ethical Considerations
+## The Pipeline: From HTML to a Clean Schema
 
-This is the part most technical writeups skip. Scraping government websites operates in a legal gray area — while public records are by definition public, the method of access can trigger:
+Raw HTML is useless to an API consumer. The pipeline stage transforms a raw document into a typed record: title, source, jurisdiction, doc type, published date, and full text. This is where most of the real work lives because every government website expresses dates and titles differently.
 
-- **CFAA concerns**: Terms of service violations are not criminal under the 2021 CFAA reform, but the legal landscape varies by jurisdiction
-- **Rate limit ethics**: The platform caps per-source rates at 1 request/second and respects `Retry-After` headers — aggressive scraping harms government IT systems that are already underfunded
-- **Data freshness**: Court records change frequently. Every record includes a `fetched_at` timestamp, and the pipeline re-scrapes high-churn sources every 24 hours
+"Tuesday, May 14th, 2024 6:30 PM" and "05/14/2024" and "May 14 2024" all need to land in the same `published_date` column. I wrote one parser for each source, then a second parser that runs only when the first one fails. The two-stage approach brought our date parse rate from 88% to 99.4%, which still means roughly 120 records a year get quarantined for manual review. That is acceptable, because silently dropping a wrong date is worse than flagging it.
 
-CommunityOne is non-commercial and open source. All scraped data is licensed under CC0 (public domain dedication) to maximize civic utility.
 
-## Key Technical Challenges
+<CodeBlock code={"from html import unescape\n\nfrom models import DocRecord\nfrom validators import parse_civic_date, infer_doc_type\nfrom text_utils import collapse_whitespace\n\ndef normalize_document(raw: dict) -> DocRecord:\n    title = collapse_whitespace(unescape(raw[\"title\"]))\n    date = parse_civic_date(raw.get(\"published_date\") or raw.get(\"meeting_date\"))\n    if date is None:\n        raise QuarantineError(f\"unparseable date: {raw['url']}\")\n    return DocRecord(\n        content_hash=raw[\"content_hash\"],\n        source=raw[\"source\"],\n        jurisdiction=raw.get(\"jurisdiction\", \"unassigned\"),\n        doc_type=infer_doc_type(title, raw[\"url\"]),\n        title=title,\n        published_date=date,\n        full_text=collapse_whitespace(extract_text(raw[\"html\"])),\n    )"} lang="python" filename="pipeline/normalize.py" />
 
-**PDF parsing.** Court documents are often scanned PDFs without OCR text layers. Tesseract OCR integration runs as a background Celery task, with confidence scoring: documents below 0.7 confidence are flagged for manual review rather than included in search results.
+The quarantine pattern is the single best decision in this codebase. Instead of crashing the pipeline or silently writing junk, a record that fails validation goes to a `quarantined_documents` table. That table is my earliest warning system for source site changes — when a city redesigns its page and all its dates suddenly fail, the quarantine count spikes and I know before users do.
 
-**Schema drift.** Government websites redesign without warning. Scraper selectors break silently. The monitoring system tracks expected element presence per scraper and alerts when three consecutive runs produce zero results.
+## FastAPI: The Right Amount of Framework
 
-**Geographic normalization.** "New York" might mean the state, the city, or a specific county. The pipeline uses the Census Bureau's Geocoding API to resolve ambiguous location strings to FIPS codes.
+I have built enough Django projects to know I did not want one here. DoxDock has one public-facing job: read JSON from a database and return it as JSON. FastAPI gives me that with async support, Pydantic validation out of the box, and a free OpenAPI spec that documents itself.
 
-## Results
 
-CommunityOne currently indexes records from 12 jurisdictions covering court filings, property records, and business registrations. The search API serves approximately 2,000 queries per month from civic organizations and journalism students.
+<CodeBlock code={"from fastapi import FastAPI, Query\nfrom supabase import create_client\n\napp = FastAPI(title=\"DoxDock API\", version=\"0.4.0\")\nsb = create_client(SB_URL, SB_ANON_KEY)\n\n@app.get(\"/documents\")\nasync def list_documents(\n    jurisdiction: str | None = None,\n    doc_type: str | None = None,\n    q: str | None = Query(default=None, max_length=200),\n    date_from: str | None = None,\n    date_to: str | None = None,\n    limit: int = Query(default=25, ge=1, le=100),\n    offset: int = Query(default=0, ge=0),\n):\n    query = sb.table(\"documents\").select(\"*\")\n    if jurisdiction:\n        query = query.eq(\"jurisdiction\", jurisdiction)\n    if doc_type:\n        query = query.eq(\"doc_type\", doc_type)\n    if date_from:\n        query = query.gte(\"published_date\", date_from)\n    if date_to:\n        query = query.lte(\"published_date\", date_to)\n    if q:\n        query = query.ilike(\"full_text\", f\"%{q}%\")\n    result = query.offset(offset).limit(limit).execute()\n    return {\"items\": result.data}"} lang="python" filename="api/main.py" />
 
-## Future Work
+That endpoint has been stable for six months. I did not need Django's admin, ORM migrations, or auth framework. I needed typed routes, dependency injection for the Supabase client, and automatic validation errors. FastAPI delivered all three without ceremony.
 
-1. **Diff tracking.** Show what changed in a case or record between scrapes — docket updates, status changes, new filings
-2. **Bulk export.** Allow researchers to download filtered datasets as CSV or Parquet for offline analysis
-3. **Webhook subscriptions.** Notify users when a specific entity (person, business, property) appears in newly scraped records
+The tradeoff is that FastAPI's ecosystem is thinner than Django's. There is no mature admin panel, and I had to build my own small dashboard for quarantine review. That was the right trade — the API is the product, not the admin.
 
-[View on GitHub](https://github.com/3ni8ma/DoxDock)
+## Supabase: Postgres Without the Ops Headache
+
+I chose Supabase for an unglamorous reason: I wanted real Postgres with as little server management as possible. I was tired of running `pg_dump` on a tiny VPS and praying that the automatic backups were working. Supabase gives me a hosted Postgres instance, row-level security policies, and a connection string I can rotate from the dashboard.
+
+The data model is boring, deliberately. A `documents` table, a `raw_documents` table, a `quarantined_documents` table, and a `sources` table. No event sourcing, no graph traversal, no vector search. Civic data queries are simple by nature: filter by date range, filter by jurisdiction, filter by keyword.
+
+Row-level security was the feature that convinced me. The public API uses an anonymous key, and the database itself enforces that anonymous users can only read documents, never insert or update. Even if the API layer got compromised, the database would reject writes.
+
+
+<CodeBlock code={"alter table documents enable row level security;\n\ncreate policy \"public_read_documents\"\n  on documents\n  for select\n  to anon\n  using (true);\n\ncreate policy \"service_role_full_access\"\n  on documents\n  for all\n  to service_role\n  using (true);"} lang="sql" filename="supabase/rls_documents.sql" />
+
+The real comparison I made before committing:
+
+| Option | Managed Postgres | RLS built-in | Auth | Monthly cost (small) | Ops burden |
+|---|---|---|---|---|---|
+| Supabase | Yes | Yes | Yes | $25 | Minimal |
+| Railway Postgres | Yes | No | No | $15 | Moderate |
+| VPS + self-hosted Postgres | No | No | No | ~$10 | High |
+| PlanetScale (MySQL) | Yes | No | No | $0 hobby tier | Minimal but MySQL, not Postgres |
+
+Supabase won because the RLS policies and the hosted Postgres were exactly the two features I did not want to build or operate myself.
+
+## Validation: Where Bad Records Go to Die
+
+Validation lives at the boundary between the pipeline and the database. Every record must pass a Pydantic model before it can be inserted into `documents`. The model enforces types: dates must be real dates, titles must be non-empty, URLs must parse, and `doc_type` must be one of a known set.
+
+The first batch of scraped records taught me the cost of being permissive. I started with a schema where `published_date` was nullable and `full_text` could be empty. Twelve percent of my first 5,000 records had a missing date or blank text. The API returned them fine, but anyone searching for "meeting minutes March" got a wall of unhelpful nulls. I tightened the model, backfilled the bad rows, and the error rate dropped to under 1.5%.
+
+The strongest lesson: validation failures are not bugs to suppress, they are signals. I initially caught a `QuarantineError` and logged it with `logger.warning`. After a city website silently changed its date format from "MM/DD/YYYY" to "Month DD, YYYY", the quarantine count told me about the redesign four days before any human reported a problem. That signal is the reason the quarantine table exists.
+
+
+<Callout type="warn">Do not write scraper output directly into your main table. If you skip validation, a single source-site change will corrupt thousands of rows faster than you can notice it.</Callout>
+
+From that redesign I also learned to separate the raw document from the parsed document. The `raw_documents` table keeps the original HTML, so when a parsing rule changes, I can re-run the pipeline on the last 90 days of raw data without re-scraping the source.
+
+Should I have included a schema version in each document? Yes. Not having one is the thing I'd fix first if I started over.
+
+## Shaping the API Around Real Questions
+
+Generic CRUD endpoints are easy. Useful civic data endpoints require knowing what people actually ask. I spent two weeks reading local forum threads, Nextdoor posts, and the questions residents emailed to their city council. Across three jurisdictions, the same patterns emerged: people want to know what happened at a meeting, when a document was published, and what a document says about a keyword.
+
+From that research, the API is shaped around questions, not resources:
+
+- `/documents?jurisdiction=maplewood&doc_type=minutes&date_from=2024-01-01` — "What happened in Maplewood since January?"
+- `/documents?q=zoning` — "Find everything mentioning zoning."
+- `/jurisdictions` — "What sources are covered?"
+
+The most-used endpoint is a search across `full_text` using `ilike`, which is not fast on huge tables, but it is honest and simple at 40,000 rows. I added a trigram index later to keep it responsive, and that was the right time to add it — after the query had proven itself, not before.
+
+One query that surprised me: "How many times did the city council go into closed session in 2024?" It is a keyword search that residents genuinely run to audit transparency. A thin layer over the database satisfied that audit in a way that a pile of PDFs never could.
+
+## Throttling, Backoff, and the County IT Email
+
+I received an email from a county IT administrator in month two. The subject line was polite, the body was not. They had seen our crawler making requests from a single IP every three to five seconds for thirty minutes straight, and they wanted to know who we were and why we were hammering their server over a public records request they had already fulfilled in 2017.
+
+The issue was honest negligence: I had written a loop that fetched a paginated list and followed each document link, without any rate limiting between the document fetches. The fix was a shared rate limiter in the scraper that allowed at most one request per three seconds per source domain.
+
+
+<CodeBlock code={"import asyncio\nimport time\n\nclass DomainThrottle:\n    def __init__(self, per_domain: dict[str, float]):\n        self.limits = per_domain\n        self._last = {}\n\n    async def acquire(self, domain: str):\n        interval = self.limits.get(domain, 3.0)\n        now = time.monotonic()\n        last = self._last.get(domain, 0.0)\n        wait = last + interval - now\n        if wait > 0:\n            await asyncio.sleep(wait)\n        self._last[domain] = time.monotonic()\n\nthrottle = DomainThrottle({\"example.gov\": 3.0, \"maplewood.gov\": 2.5})"} lang="python" filename="pipeline/throttle.py" />
+
+I also added exponential backoff on `429` and `503` responses, starting at five seconds and doubling to a maximum of two minutes. The county IT administrator and I are on good terms now. I send them the scraper's user agent, I keep the rate under their threshold, and they stopped blocking my IP. The civic tech community runs on relationships like that.
+
+## What I'd Do Differently Next Time
+
+First, I would add a schema version to the documents table from day one. Migrations are unavoidable; versioned rows make the migration path obvious. The four failed migrations I hit were all cases where a migration ran halfway and left rows in an inconsistent state. A version column would have made the rollout safer.
+
+Second, I would extract metadata at scrape time, not at parse time. The scraper already fetches the HTML; capturing the response headers and the `last-modified` date at that moment is nearly free. It solved a real problem for us later: conditional GET requests using `If-Modified-Since` cut our re-scrape bandwidth by roughly 70% for sources that send proper headers.
+
+Third, I would treat the quarantine queue as a first-class part of the dashboard. It is currently a manual SQL query. That is fine for me, but if DoxDock grows past a handful of contributors, quarantine review needs a UI and a clear workflow.
+
+Finally, I would start with a smaller jurisdiction. I learned the hard way that scraping a large county site with dozens of departments multiplies every inconsistency by ten. One city, one source, one solid end-to-end pipeline — then add the next city.
+
+
+<Quiz question={"Why did we use ON CONFLICT DO NOTHING when ingesting raw documents?"} options={["It skips duplicate rows so re-scraping a page does not overwrite the original fetched_at", "It is the only way to insert into a table that has a unique constraint in Postgres", "It is faster than a SELECT followed by an INSERT because it never acquires a lock"]} answer={0} explanation={"ON CONFLICT DO NOTHING skips duplicate rows, so re-scraping a page leaves the original fetched_at and avoids resetting the idempotency key."} />
+
+
+<KeyTakeaways items={["Treat scraping as a pure fetch-and-stash stage; parse in a separate pipeline layer so source-site changes don't break the crawler.", "Use conditional GET (`If-Modified-Since`) and content hashes to make re-scraping cheap and idempotent.", "Validate every record at the database boundary; route failures to a quarantine table instead of silently dropping them.", "FastAPI earns its place when you need typed routes and OpenAPI without the weight of Django.", "Supabase's RLS policies give you a public API that the database itself refuses to compromise.", "Throttle aggressively, identify yourself, and build relationships with the people who run the servers you scrape."]} />
+
+
+<Faq items={[{"q": "Is DoxDock only useful for municipalities?", "a": "No. Any government body that publishes documents \u2014 school boards, water districts, port authorities, state agencies \u2014 fits the same pattern. If the body publishes agendas or minutes as HTML or PDFs behind a predictable URL structure, DoxDock's pipeline can ingest them. The scrape and normalize layers are source-specific, but the storage and API layers are not."}, {"q": "Why Supabase instead of a plain Postgres container or a different hosted DB?", "a": "I wanted real Postgres with row-level security and zero VPS maintenance. Supabase gave me all three at a price that beats renting a small VPS and babysitting pg_dump. If I were on a budget, I would run Postgres in Docker locally and use the exact same schema; the SQL is portable."}, {"q": "How do you handle PDFs?", "a": "The scraper fetches the PDF, and a separate worker extracts text using pypdf before normalization. PDFs are quarantined more often than HTML because extraction quality varies wildly with the source PDF generator. For scanned documents with no text layer, OCR is a future work item \u2014 right now those go to quarantine with a clear reason code."}, {"q": "Can I run the scraper against my own city's website?", "a": "Yes, and I'd encourage it. The sources table stores a base URL and a scraper identifier, so adding a new source means writing one scraper module and registering it. Follow the throttle defaults, send a real user agent, and email the city's IT department first. The open-source repo has a contributor guide for exactly this workflow."}]} />
+
+## Conclusion
+
+The most important lesson from building DoxDock is that civic data infrastructure is not a performance problem; it is a trust and reliability problem. No one needs a million rows served in 15 milliseconds. They need the right row, with the right date, from the right jurisdiction, every single time. That changes engineering priorities: validation matters more than vectorization, quarantine matters more than caching, and a well-worded email to a county IT administrator matters more than any load balancer.
+
+DoxDock is also a reminder that scraping public data is a relationship with the institution, not an extraction exercise. The city and county sites I scrape run on aging servers and part-time staff. Treating them with respect — rate limits, identifying headers, conditional requests — is both the ethical choice and the practical one. The project's most reliable data source is the one whose webmaster I called on the phone.
+
+The open source repository is modest. It is not a framework, it is not a SaaS, it is a working pipeline for one specific, frustrating problem: public documents that are technically online but effectively inaccessible. If you have ever spent an hour hunting for a meeting agenda, you know the feeling DoxDock is built to remove.
+
+The code is on GitHub, and I keep a list of open issues tagged "good first scrape" for anyone who wants to add their own city. [View the project on GitHub](https://github.com/3ni8ma/DoxDock).

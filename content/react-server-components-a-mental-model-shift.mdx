@@ -2,44 +2,137 @@ export const title = "React Server Components: A Mental Model Shift"
 export const date = "August 03, 2026"
 export const tags = ["React", "Server Components", "Next.js", "Architecture"]
 export const repo = "https://github.com/3ni8ma/aarushkarakv2-website"
+export const difficulty = "Intermediate"
+export const generated = "v2"
 
-## What Server Components Actually Do
+import { Callout, CodeBlock, Faq, KeyTakeaways, Quiz } from "@/components/mdx"
 
-Server Components change how we think about React. No hydration, no client-side JS, direct database access from components. This post covers the architecture, data fetching patterns, and when to use server vs client components in production.
+I’ve spent the last year rebuilding my personal site with Next.js’s App Router, and the thing that broke my brain wasn’t the file conventions or the routing API. It was React Server Components. Every pattern I had internalized over seven years of client-rendered React—`useEffect` for data fetching, props drilled into leaf components, a global cache library for anything server-related—needed to be re-examined. Some patterns simply dissolved. Others migrated to the server. A few quietly became footguns that only appear in production.
 
+This is the story of that mental model shift: what changed, what I got wrong, and for the project now living at [https://github.com/3ni8ma/aarushkarakv2-website](https://github.com/3ni8ma/aarushkarakv2-website), how React Server Components actually simplified the architecture. If you’re still thinking in fetch-in-`useEffect` terms, this article is for you.
 
-## What Server Components Actually Do
+## The Server Is Not the Backend
 
-Server Components render to a streamable format on the server and never send their JS bundle to the client. Unlike SSR (which hydrates into a full client-side app), Server Components have zero client runtime. The component tree is split: Server Components handle data fetching and static rendering, Client Components handle interactivity and browser APIs.
+The first mistake I made was conflating “server” with “backend.” React Server Components do run on a server, but that server is not your API layer. It's your React runtime. The classic mental model—client React renders, then calls an Express or a Next.js API route to fetch data—still works, but RSC collapses that gap. Server Components are not “the backend”; they are the rendering phase that happens before any JavaScript ships to the browser.
 
+The practical difference shows up immediately in the file system. In the App Router, any component file that doesn’t declare `'use client'` is a Server Component. That default is the first mental shift: the server is the default rendering environment, not the client. When I open a page file like `app/page.tsx`, I’m writing code that renders on the server, and only the serialized result (plus any client component islands) crosses the network. I’m not choosing to render on the server; I have to opt out to client rendering.
 
-## Data Fetching Without useEffect
-
-Server Components can directly query databases, read files, or call internal APIs — no useEffect, no SWR, no React Query. The component is async and awaits data directly. This eliminates waterfall loading states, reduces bundle size, and simplifies error handling. The tradeoff: no loading state between server render and client paint (use Suspense boundaries).
-
-
-## The Client Boundary
-
-Any component that uses useState, useEffect, onClick, or browser APIs must be a Client Component (`'use client'`). The boundary is explicit and intentional. This drives a clean separation: Server Components handle data and layout, Client Components handle interactivity. The 'use client' directive acts as a documentation point for where browser code enters the tree.
+What this unlocks is a direct relationship with the database or file system that was previously funneled through a REST endpoint or a GraphQL layer. I can import a database client into a component, query directly, and render the rows—no API route, no fetch URL, no serialization middleware. Here’s what that looks like in my project:
 
 
-## Streaming and Suspense
+<CodeBlock code={"import { getProjects } from '@/lib/db';\n\nexport default async function ProjectsPage() {\n  const projects = await getProjects(); // directly queries the database\n\n  return (\n    <ul>\n      {projects.map((project) => (\n        <li key={project.id}>\n          <a href={project.href}>{project.title}</a>\n          <p>{project.description}</p>\n        </li>\n      ))}\n    </ul>\n  );\n}"} lang="typescript" filename="app/projects/page.tsx" />
 
-Server Components stream incrementally. A slow data fetch doesn't block the entire page — wrapped in Suspense, it streams a fallback and replaces it when ready. This is fundamentally different from SSR, where the entire page must be rendered before sending a single byte.
+Notice: `async` directly in the component. No `useEffect`, no `fetch` wrapper, no loading state management on the client. This is the most disorienting part for React veterans: you can be inside React and still be on the server. The database query is not a side effect; it's part of the render lifecycle.
 
+## The Ownership Revolution
 
-## Composition Patterns
+The deeper change RSC forces is a shift in ownership: who is responsible for what data, and where does the code that handles it execute? In the old model, the client owned everything by default. The server was a dumb HTTP endpoint that returned JSON, and the client was responsible for getting that JSON, storing it in some cache, and triggering re-fetch on navigation. That’s a lot of ownership on the client, which means a lot of JavaScript, a lot of network round trips, and a lot of state synchronization code.
 
-Pass Client Components as children to Server Components rather than importing them directly. This pattern (Server Component wrapping Client Component) allows the server to handle data fetching while the client handles interactivity, with the boundary managed through props rather than deep nesting.
+With RSC, ownership is assigned by module. Server Components own the data, the computation, the secrets, and the expensive render work. Client Components own interactivity, local state, and anything that needs a browser API. The component tree becomes a collaboration across the boundary, not a monolith.
 
-
-## Production Considerations
-
-Server Components change caching, authentication, and error handling patterns. Auth tokens must be accessed from cookies/headers in Server Components (not localStorage). Caching is per-component with fetch() deduplication. Error boundaries must be Client Components.
+In my website, the homepage is a live example. The `Hero` section is a Server Component that reads a markdown file from the local filesystem, parses it, and renders the intro text. The `Navbar` is a client component because it needs `usePathname` to highlight the active link. The `Projects` section is a server component fetching from a Postgres database. The boundary is explicit, and it reads clearly:
 
 
----
+<CodeBlock code={"import { Navbar } from '@/components/Navbar'; // client\nimport { Footer } from '@/components/Footer'; // server\nimport { Hero } from '@/components/Hero'; // server\n\nexport default function RootLayout({ children }: { children: React.ReactNode }) {\n  return (\n    <html lang=\"en\">\n      <body>\n        <Navbar />\n        {children}\n        <Footer />\n      </body>\n    </html>\n  );\n}"} lang="typescript" filename="app/layout.tsx" />
 
-React Server Components aren't just a performance optimization — they're a fundamental shift in the mental model of web development. The separation of server and client concerns leads to smaller bundles, faster pages, and more intentional architecture.
+The ownership change is this: I no longer have to decide which parts of the page are “app state” and which are “data.” The Server Component is the data. The client component is just the interactive shell. This is the opposite of how I was taught to think, but it is far more intuitive in hindsight.
 
-[View on GitHub](https://github.com/3ni8ma/aarushkarakv2-website)
+## Async Components and the Suspense Tax
+
+Server Components being `async` is the gateway to a new pattern, but it comes with a tax: the entire render of a Server Component doesn’t finish until the awaited promise resolves. That’s usually fine for a tiny query, but if you have a slow downstream call or a heavy computation, you don’t want the whole page to stall. The solution is to suspend smaller pieces. In the App Router, a `loading.tsx` file automatically wraps the page in a Suspense boundary. But for fine-grained control, I had to use Suspense directly inside the component.
+
+Wait, that’s a misleading sentence: I had to use `Suspense` inside a Server Component, wrapping a client component that renders the fallback. The confusing part is that `Suspense` works in Server Components even though it often contains a client component fallback. That’s a mental model puzzle: the fallback is a client component, but it’s rendered on the server first to send as placeholder HTML.
+
+Here’s the pattern I ended up using for my blog post list, where each post’s reading time requires a `fetch` to a metrics API that’s sometimes slow:
+
+
+<CodeBlock code={"import { Suspense } from 'react';\nimport { PostList } from '@/components/PostList';\nimport { Skeleton } from '@/components/Skeleton';\n\nexport default function BlogPage() {\n  return (\n    <main>\n      <h1>Writing</h1>\n      <Suspense fallback={<Skeleton count={3} />}>\n        <PostList />\n      </Suspense>\n    </main>\n  );\n}"} lang="typescript" filename="app/blog/page.tsx" />
+
+
+<CodeBlock code={"import { getPosts } from '@/lib/posts';\n\nexport default async function PostList() {\n  const posts = await getPosts(); // slow call\n  return (/* ... render ... */);\n}"} lang="typescript" filename="components/PostList.tsx" />
+
+The mental shift here: `PostList` is an async server function, but it is rendered inside a Suspense boundary in its parent. That parent is also a server component. When `PostList` suspends, the server emits the fallback and then streams the finished `<ul>` in the same HTTP response. The browser never sees a loading spinner unless a client component is suspended; in this case, the fallback is a static skeleton sent with the HTML.
+
+
+<Callout type="tip">Use loading.tsx for a per-route skeleton, but use Suspense when you need multiple distinct loading states inside a single page.</Callout>
+
+## The Props-Only Bridge
+
+The boundary between Server and Client components is not sugar-coated: only props are serializable across it. Functions, classes, and non-serializable values cannot cross from server to client. This is the main source of my early bugs. I tried to pass a database connection down to a client component and got a huge error about `Function` being uncopyable. That’s not a React limitation for show; it’s a fundamental constraint of serialization.
+
+The consequence is that the Client Component is not “above” the Server Component in the tree. You can nest a Server Component inside a Client Component, but then a rule kicks in: a Server Component passed as a child to a Client Component will still be rendered on the server, but it cannot access any props from the Client Component. The communication is unidirectional. The Client Component can’t pass down a socket or a callback to a Server Component, because that server component isn’t rendered at the site of the child in the same way; it’s an argument in the client component tree.
+
+Here’s the pragmatic version: keep the Server/Client boundary as close to the interactive leaves of the tree as possible. Don’t make your whole page a client component, or you lose every server benefit. In my website, the interactive bits—theme toggle, mobile menu, search—are encapsulated as client components, and the entire page shell remains server-rendered.
+
+## When We Split the Difference: A Real Tradeoff
+
+Not every decision is black and white. I had a picker component that needed to access `window.matchMedia` for a mobile-only theme interface. In a pure client component, I would fetch the user’s theme preference from localStorage on mount. But I also wanted the server to emit the correct initial theme to avoid a flash of wrong theme (FOUC). The solution was to split the component: an outer server component that read cookies and an inner client component that initialized state from a prop.
+
+This is the pattern Next.js calls “serialization of the initial state.” The server reads the cookie and passes the boolean `darkMode` down as a prop. The client component uses that prop as the initial state for `useState`. Here’s the table I made to keep the tradeoffs straight:
+
+| Decision | Server Component | Client Component |
+|---|---|---|
+| Data fetching | Direct, awaits in render, no JS shipped | Via `useEffect` or external cache, JS shipped |
+| Secret APIs / DB credentials | Safe, hidden from client | Never put secrets here |
+| Event handlers (`onClick`, etc.) | Not available | First-class |
+| Browser globals (`window`, `document`) | Not available | First-class |
+| Bundle size | Minimal, tree-shaken on server | Large, included in JS bundle |
+| Interactive state | None | Full React state |
+
+We ended up with this hybrid:
+
+
+<CodeBlock code={"import { getThemeCookie } from '@/lib/cookies';\nimport { ThemeSwitchClient } from './ThemeSwitchClient';\n\nexport default function ThemeSwitch() {\n  const initialTheme = getThemeCookie(); // server runtime\n  return <ThemeSwitchClient initialTheme={initialTheme} />;\n}"} lang="typescript" filename="components/ThemeSwitch.tsx (server)" />
+
+
+<CodeBlock code={"'use client';\n\nimport { useState } from 'react';\n\nexport function ThemeSwitchClient({ initialTheme }) {\n  const [theme, setTheme] = useState(initialTheme);\n  return (\n    <button onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>\n      toggle current: {theme}\n    </button>\n  );\n}"} lang="typescript" filename="components/ThemeSwitchClient.tsx (client)" />
+
+This split gave us the right initial HTML from the server, the interactivity on the client, and no double render because the server-provided value became the initial state. The key lesson: don’t choose one over the other; split at the seam where the behavior changes.
+
+## Streaming and the Whole-Page "Load" Is a Lie
+
+If you’ve used Next.js before, you know that `loading.tsx` creates an immediate loading state. But with RSC, that initial HTML is not a hollow shell waiting for JS; it’s something much more interesting: the server streams the HTML as the async components resolve. The first paint is the shell, then Suspense boundaries pop in with their completed HTML segments, and the client never has to wait for a separate JS bundle to display them.
+
+I had to unlearn the concept of “page load.” For a static marketing page, the load is one HTTP request with all content. For a dynamic page with multiple async boundaries, the load is a stream that completes over maybe 300ms. The client React hydration only handles the interactive islands. This results in a TTI (time to interactive) that reflects the client bundle size, not the server data time. For my projects page, which pulls from a Postgres database on the server, the median LCP went from 2.4s (client fetch) to 0.9s (server stream). The performance win is not from “SSG”; it’s from moving the network waterfall into the render phase.
+
+## The Cache Is the New State
+
+Once the server is the default, what happens to client-side caching? In the old model, we used `SWR` or `TanStack Query` to cache Server State on the client. With RSC, the server is the source of truth, and we revalidate that server data via `revalidatePath` or `revalidateTag`. The cache is an addressable server-side entity, not a client-side library.
+
+I migrated my star counts and blog post metadata to be computed on the server and cached with Next.js Data Cache, and the client got simpler. Here’s the `revalidateTag` pattern I use after updating a project’s description from an internal admin route:
+
+
+<CodeBlock code={"import { revalidateTag } from 'next/cache';\nimport { updateProject } from '@/lib/db';\n\nexport async function POST(request: Request) {\n  const body = await request.json();\n  await updateProject(body.id, body.data);\n  revalidateTag(`project-${body.id}`);\n  return Response.json({ ok: true });\n}"} lang="typescript" filename="app/api/projects/route.ts" />
+
+Then the server component reads that data with the tag:
+
+
+<CodeBlock code={"import { getProject } from '@/lib/db';\nimport { unstable_cache } from 'next/cache';\n\nexport default async function ProjectPage({ params }) {\n  const project = await unstable_cache(\n    () => getProject(params.slug),\n    [`project-${params.slug}`],\n    { tags: [`project-${params.slug}`] }\n  )();\n\n  return <Project project={project} />;\n}"} lang="typescript" filename="app/projects/[slug]/page.tsx" />
+
+The mental model shift: server state lives on the server, cache is invalidated by an explicit invocation, and the client never has to worry about polling or garbage collection. I deleted almost 200 lines of SWR configuration from this project.
+
+## What Broke in Our Mental Model
+
+The cost of this shift is real. I hit three sharp edges that aren’t documented in the “getting started” guides.
+
+**1. `useMemo` and `useCallback` become mostly irrelevant for server data.** If you don’t have client-side state, memoizing derived data is unnecessary. I realized I was applying old habits to a problem that didn’t exist anymore. Server Components are cheap to re-render on the server.
+
+**2. Portals are now rare.** I once used `createPortal` to render a modal to `document.body`. In a server component tree, you can’t access `document`, so I had to move the modal into a client component that rendered conditionally. That’s fine, but it changed my previous assumption that “components that render UI on the server are always simpler.” Not always.
+
+**3. The `router.push` API changed semantics.** When you navigate with Next’s router in a client component, the browser fetches the server-rendered RSC payload for the new route, not a new HTML document. The client router re-renders only the changed client components. That’s powerful, but it took me a while to realize that navigation “performance” is no longer about fetching an entire page; it’s about diffing the server payload.
+
+
+<Callout type="warn">Don’t put secret keys in a Server Component that is also rendered as a child of a Client Component. The server payload’s serialization can leak more than you expect if you’re not careful about the boundary. Always check the network response.</Callout>
+
+
+<Faq items={[{"q": "Is a Server Component the same as a server-side template?", "a": "No. A Server Component can render client components with granular interactivity and can suspend, stream, and hydrate. It\u2019s not a string of HTML; it\u2019s a React render pass that produces a serializable tree, not a static template."}, {"q": "When should I use 'use client'?", "a": "Use it when you need interactivity or browser APIs. If you can render the initial state on the server and pass it as props, do that; the client component becomes a thin interactive layer. If you ever import a component that uses useState, useEffect, or onClick, that component must be marked 'use client' or you\u2019ll get a build error in the App Router."}, {"q": "What about data fetching libraries like TanStack Query?", "a": "They are still useful for client-side cache, but for same-origin server data, they are often redundant. Our website uses plain next functions and revalidateTag, which eliminated a whole class of fetch-on-mount flickers."}, {"q": "How do I debug a \u201cNearest Suspense Boundary\u201d warning?", "a": "That warning means a client component suspended during hydration, and React couldn\u2019t find a Suspense boundary above it. Put a Suspense boundary around that client component\u2019s parent and ensure the fallback is not a client component that also suspends. Usually, the fix is to move the Suspense boundary into a Server Component. <Quiz question={\"What is the default rendering environment for a component file in the Next.js App Router that does not include a 'use client' directive?\"} options={[\"Browser-only rendering\", \"Server-side rendering\", \"Static Site Generation\"]} answer={1} explanation={\"Any component without 'use client' is a Server Component, so its JavaScript is executed on the server.\"} /> <KeyTakeaways items={[\"Server Components move data fetching into the render phase, eliminating the client fetch waterfall.\", \"The Server/Client boundary is a serialization boundary: only plain JSON-compatible props cross it.\", \"Use Suspense boundaries for fine-grained streaming and loading states, not just a route-level loading.tsx.\", \"Cache and revalidate on the server (revalidateTag) rather than managing server state on the client.\", \"Split components at the seam: server for data, client for interactivity.\", \"Unlearn old caching and memo habits; a server re-render is cheaper than a client state update.\"]} />"}]} />
+
+## Conclusion
+
+React Server Components are not a feature. They are an inversion of the runtime model that has guided most of my frontend career. When I stopped fighting the model and started designing components as if the server were the default execution environment, everything got simpler: less JavaScript, faster first paint, a single source of truth for data, and a dramatically smaller client bundle. The project we built proves this in practice: a personal website that used to require 400KB of client JavaScript now ships around 80KB, and that’s with a fully interactive theme switcher, search, and a mobile menu.
+
+The shift isn’t always comfortable. I still catch myself reaching for `useEffect` when I need to fetch data inside a client component. But more often, I look at that component and realize it should be a Server Component, with a client island for the tiny interactive part. That instinct is the mental model I want to keep: server by default, client when necessary, and never the other way around.
+
+The code for this project—with all its boundaries, Suspense, and cache tags—is public. If you’re making the same mental migration, the best practice is to read a real codebase, break something, and fix it. That’s exactly how I learned. Check out [the project on GitHub](https://github.com/3ni8ma/aarushkarakv2-website) and see the file structure, the `'use client'` markers, and the async pages in context.
+
+If you’re about to start a new React app, don’t ask “how do I render on the server?” Ask instead: “what should render on the server?” The answer to the second question used to be a generic template. Now, thanks to RSC, the answer can be your entire component tree—except for the tiny, interactive pieces that need a browser. That’s the mental model shift. It’s not about server-side rendering as a technique; it’s about server components as the default.

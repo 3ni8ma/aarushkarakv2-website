@@ -8,6 +8,9 @@ export interface BlogPostMeta {
   tags: string[];
   repo: string;
   excerpt: string;
+  difficulty?: string;
+  readingTime: string;
+  wordCount: number;
 }
 
 export function toIsoDate(date: string): string {
@@ -54,8 +57,17 @@ export function getAllPosts(): BlogPostMeta[] {
         ? tagsMatch[1].split(",").map((t) => t.trim().replace(/"/g, ""))
         : [];
       const repo = raw.match(/export const repo = "(.*)"/)?.[1] || "";
+      const difficulty = raw.match(/export const difficulty = "(.*)"/)?.[1];
       const excerpt = extractExcerpt(raw);
-      return { slug, title, date, tags, repo, excerpt };
+      const wordCount = raw
+        .replace(/^export[\s\S]*?\n\n/, "")
+        .replace(/```[\s\S]*?```/g, " ")
+        .replace(/<[^>]+>/g, " ")
+        .split(/\s+/)
+        .filter(Boolean).length;
+      const minutes = Math.max(1, Math.round(wordCount / 200));
+      const readingTime = `${minutes} min read`;
+      return { slug, title, date, tags, repo, excerpt, difficulty, readingTime, wordCount };
     })
     .sort(
       (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),

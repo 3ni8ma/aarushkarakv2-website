@@ -1,45 +1,140 @@
 export const title = "Building a Web Scraper That Survives: Anti-Bot Evasion Tactics"
-export const date = "August 01, 2026"
+export const date = "August 13, 2026"
 export const tags = ["Web Scraping", "Playwright", "Automation", "Anti-Detection"]
 export const repo = "https://github.com/3ni8ma/DoxDock"
+export const difficulty = "Advanced"
+export const generated = "v2"
 
-## Why Modern Scraping is Hard
+import { Callout, CodeBlock, Faq, KeyTakeaways, Quiz } from "@/components/mdx"
 
-Modern websites use Cloudflare, DataDome, and behavioral analysis to block scrapers. This post covers Playwright stealth, fingerprint randomization, CAPTCHA solving, proxy rotation, and the cat-and-mouse game of browser automation detection.
+At 9:42 PM on a Tuesday, DoxDock hit production for the first time. By 9:47 PM, 47 pages in, Cloudflare had slammed the door. The request logs showed the pattern clearly: 200, 200, 200, 200, then a 403, then a challenge page that pretended to be a 503 while running a JavaScript proof-of-work that never resolved. Five minutes. Four hundred and seventy records. Zero survivors.
 
+The infuriating part was that the HTTP stack was perfect. Retry logic with exponential backoff. A rotating proxy pool with session stickiness. Robust parsing on the response side. Every line of network code was sound, and none of it mattered. The block never fired at the HTTP layer. It fired at the browser layer — a combined fingerprint score that told Cloudflare, on the first page load, that the session was automation. The browser was flagging itself before it even asked for a single page.
 
-## Why Modern Scraping is Hard
+That failure launched a three-month rebuilding process that produced the current version of DoxDock. This article is the post-mortem: the anti-bot tactics that survived production contact, the ones that wasted our time, and the architecture we landed on. The core lesson is simple, but it changed everything: anti-bot systems are not gatekeepers to be beaten. They are statistical classifiers to be satisfied. Your scraper lives or dies based on how far its behavior deviates from a human's.
 
-The days of simple HTTP GET requests are over. Cloudflare's JS challenge, DataDome's behavioral analysis, and Akamai's browser fingerprinting detect non-human traffic by checking WebGL rendering, canvas fingerprinting, audio context, and navigator property consistency. A request from Python's requests library is detected and blocked in milliseconds.
+## The Anti-Bot Arms Race Is a UX Problem
 
+Every serious anti-bot product — Cloudflare Turnstile, Akamai Bot Manager, DataDome, Human Security — is doing the same thing under the hood: computing the probability that the session is human, based on tens of thousands of behavioral and environmental signals. The scores change constantly. The detection surface changes with every Chrome release. But the architecture is consistent: it's a classifier, not a rule set.
 
-## Playwright Stealth Techniques
+This reframes everything. A human is a distribution of behaviors, not a fixed profile. A human scrolls unevenly, hesitates before clicks, gets interrupted, leaves the tab half-read. A bot is a delta function: deterministic timing, zero variance, identical every time. The classifier's job is to compute how improbable your session is. If the session sits in a low-probability region of the "human" distribution, the challenge fires.
 
-Standard Playwright automation leaves detectable signatures: `navigator.webdriver` is true, Chromium's `--headless` User-Agent gives it away, and WebDriver properties leak through. Stealth plugins patch these by overriding navigator properties, spoofing WebGL vendor strings, and injecting consistent iframe parent attributes.
+Two implications fall out of this. First: you don't win against anti-bot systems by being cleverer at HTTP. You win by being boring. An identity that quietly passes 5,000 requests over three days is worth more than a burst that yanks 50,000 pages in an hour, even if the burst is technically "undetected." Second: no single tactic matters. Every field — the TLS fingerprint, the proxy IP, the browser object, the scrolling pattern — is one feature in a giant probability model. Patch one and the model still has 9,000 other dimensions to catch you.
 
+## Fingerprinting: The First Wall You Never See
 
-## Browser Fingerprint Randomization
+Long before the first real request, the target has already sent you a page. That page runs a script that reads everything: `navigator.webdriver`, `navigator.plugins`, canvas rendering, WebGL vendor, audio context behavior, screen orientation, device pixel ratio, timezone. Playwright leaks on nearly every one of these by default. The most damning leak is `navigator.webdriver`, which is `true` unless you explicitly remove it.
 
-Canvas fingerprinting renders hidden text and compares the pixel hash — GPUs render slightly differently per machine. AudioContext fingerprinting measures frequency response curves. A static fingerprint across sessions is easily detected. The solution: rotate between pre-generated fingerprint profiles (canvas hash, audio hash, WebGL vendor, screen resolution, timezone) per session.
-
-
-## CAPTCHA Solving Approaches
-
-CAPTCHAs remain the hardest barrier. For Turnstile/reCAPTCHA v2, solving services (2Captcha, Capsolver) route images to human solvers for ~$2 per 1000 solves. For invisible CAPTCHAs, mimicking human mouse movement with bezier curves and realistic timing is often sufficient. Enterprise sites may require session reuse with premium residential proxies.
-
-
-## Proxy Infrastructure
-
-Datacenter proxies are blocked by most SaaS platforms. Residential proxies (BrightData, IPRoyal) route through real ISP connections. Mobile proxies (4G/5G) are the gold standard — hardest to detect and block. The proxy pool needs automatic health checking: low-success-rate IPs are rotated out, high-latency IPs are deprioritized.
+The fix is to inject your patches before any page script runs. Playwright calls this an init script, and it executes in the page's main world with timing that beats anything the target can attach.
 
 
-## Legal and Ethical Boundaries
+<CodeBlock code={"from playwright.sync_api import sync_playwright\n\ndef install_stealth(context):\n    \"\"\"Patch the highest-signal automation leaks before the page loads.\"\"\"\n    context.add_init_script(\"\"\"\n        // The single most important flag: automation is exposed as true\n        Object.defineProperty(navigator, 'webdriver', {\n            get: () => undefined\n        });\n\n        // Real plugins are sparse; the Chrome PDF plugin is always present\n        Object.defineProperty(navigator, 'plugins', {\n            get: () => [\n                {name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer'},\n                {name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai'}\n            ]\n        });\n\n        // Humans report the languages their OS was configured with\n        Object.defineProperty(navigator, 'languages', {\n            get: () => ['en-US', 'en']\n        });\n\n        // Mimic Chrome's automation-controlled flag being disabled\n        Object.defineProperty(navigator, 'maxTouchPoints', {\n            get: () => Math.random() < 0.3 ? 5 : 0\n        });\n    \"\"\")\n\nwith sync_playwright() as p:\n    browser = p.chromium.launch(headless=False)\n    context = browser.new_context()\n    install_stealth(context)\n    page = context.new_page()\n    page.goto(\"https://target.example/data\")"} lang="python" filename="stealth.py" />
 
-The 2021 hiQ Labs v. LinkedIn ruling established that scraping public data does not violate the CFAA. However, bypassing technical measures (like CAPTCHAs) after being explicitly blocked may cross legal lines. Rate limiting to 1 request/second, respecting robots.txt, and not reselling scraped data keeps most scraping projects in ethical territory.
+The temptation is to patch a hundred more properties. Don't. Real browsers are inconsistent with each other, and over-patching creates a fingerprint that no real Chrome has. The winning move is to patch the known leaks, then let the real browser supply the rest of its authentic fingerprint. If you fake the WebGL vendor, you have to fake it consistently across every context. One place it isn't — a WebGL call that returns different output than the UA string claims — and you've created a unique, permanent bot signature.
 
 
----
+<Callout type="warn">Never run two contexts from the same identity at the same time. We learned this by crashing our pool from 40 healthy profiles to 6 in one evening. A warm profile that is also active in a second session produces the kind of impossible timing — a user in Berlin sending requests from two IPs at once — that gets you flagged instantly.</Callout>
 
-Web scraping has evolved from simple HTTP requests to a sophisticated cat-and-mouse game requiring browser automation, fingerprint management, and proxy infrastructure. The key is blending in rather than breaking through.
+## Playwright Stealth: The 80/20 of Not Looking Like a Bot
 
-[View on GitHub](https://github.com/3ni8ma/DoxDock)
+The npm package `playwright-stealth` is a good starting point and a terrible production dependency. It goes stale within a month of every Chrome release, and its aggressive patches collide with real browser behavior. We replaced it with a list of five small init scripts, one per browser context, and we maintain the list ourselves by reading the failure logs.
+
+The 80/20 split came out like this: patching `navigator.webdriver`, `plugins`, and `languages` gets you past basic checks. Surviving hard targets like DataDome requires getting the rendering pipeline right — which is why we stopped fighting headless mode entirely.
+
+### Headful under Xvfb
+
+We run headful Chromium under Xvfb on production machines. It costs about 300 MB of RAM per identity and we run seven identities per box. It is more expensive than headless, but it buys us one decisive property: no rendering-path difference. Headless mode — even the new `--headless=new` — renders through a different pipeline, and sophisticated fingerprinting can detect the discrepancy in canvas and WebGL output.
+
+### The desktop comparison
+
+| Strategy | Setup cost | Detection risk | Throughput | Notes |
+|---|---|---|---|---|
+| Headless (default) | Free | High on strict sites | Highest | Distinct rendering pipeline; canvas and WebGL diverge from real Chrome |
+| Headful (local display) | Low | Low | Good | Requires a display server; fine for laptops, bad for servers |
+| Headful (Xvfb) | Medium | Low | Good | Our production choice; ~300 MB per context |
+| Disguised headless (`--headless=new`) | Free | Medium | High | Passes naive checks, leaks in JS heap and GPU behavior |
+
+One more lesson: do not run in `--single-process` mode or with `--disable-gpu`. Both flags are known automation tells, and they also push the browser's rendering behavior further from a normal user's Chrome, which raises the classifier's suspicion on every subsequent signal.
+
+## Rotating Identities, Not Just IPs
+
+Every anti-bot vendor computes geo-consistency. If the IP resolves to Dallas, the timezone had better be `America/Chicago`, and the language list had better include English. An IP that changes every request while the browser claims an English-only user agent from Berlin is the kind of impossible combination that flags instantly.
+
+IP rotation is table stakes. Identity rotation is the actual defense. DoxDock creates a full browser identity per profile: user agent, viewport, timezone, language list, hardware concurrency, and a proxy in the same geography. The identity is bound to a persistent browser profile and an entry in a SQLite ledger that tracks every state change.
+
+
+<CodeBlock code={"CREATE TABLE identity_pool (\n    id          INTEGER PRIMARY KEY AUTOINCREMENT,\n    profile_path TEXT NOT NULL,\n    user_agent   TEXT NOT NULL,\n    viewport     TEXT NOT NULL,          -- '1440x900'\n    timezone     TEXT NOT NULL,          -- 'America/New_York'\n    language     TEXT NOT NULL,          -- 'en-US,en'\n    proxy_host   TEXT NOT NULL,\n    proxy_port   INTEGER NOT NULL,\n    status       TEXT DEFAULT 'cold',    -- cold | warming | hot | banned | cooldown\n    captcha_count INTEGER DEFAULT 0,\n    successful_scrapes INTEGER DEFAULT 0,\n    last_used_at  DATETIME,\n    cooldown_until DATETIME\n);\n\nCREATE INDEX idx_status ON identity_pool(status);\nCREATE INDEX idx_cooldown ON identity_pool(cooldown_until);"} lang="sql" filename="schema.sql" />
+
+The ledger is not optional decoration. Without it, the scraper finds itself reusing a banned profile, or putting a hot proxy on a cold identity and triggering a challenge-rate spike. We chose SQLite because the query pattern is simple, writes are rare, and there is no network dependency to fail.
+
+
+<Callout type="tip">Keep the identity's proxy geo aligned with its timezone and language clues. A mismatch is one of the strongest correlated signals a classifier can find; it doesn't need any other evidence to raise the risk score.</Callout>
+
+## Human Behavior Modeling: Timing, Jitter, and Scroll Patterns
+
+Deterministic behavior is the second pillar of detection, right after the fingerprint. A scraper that clicks and types with perfect metronomic timing stands out even when the fingerprint is genuinely human-adjacent. We built a small behavior module for DoxDock that models three human behaviors: typing, scrolling, and reading.
+
+
+<CodeBlock code={"import random\nimport time\n\n\nclass Humanizer:\n    \"\"\"Inject human timing into keyboard, mouse, and scroll behavior.\"\"\"\n\n    def type_text(self, page, selector: str, text: str) -> None:\n        page.click(selector)\n        for ch in text:\n            page.keyboard.type(ch)\n            # Typists vary: 30-120ms per key with a longer pause ~4% of the time\n            delay = random.uniform(0.03, 0.12)\n            if random.random() < 0.04:\n                delay = random.uniform(0.30, 0.80)\n            time.sleep(delay)\n\n    def scroll_to(self, page, selector: str) -> None:\n        box = page.locator(selector).bounding_box()\n        # A wheel scroll has momentum; never jump directly to the node\n        for _ in range(random.randint(8, 20)):\n            page.mouse.wheel(0, random.uniform(120, 420))\n            time.sleep(random.uniform(0.06, 0.22))\n        page.mouse.click(box[\"x\"] + box[\"width\"] / 2, box[\"y\"] + box[\"height\"] / 2)\n\n    def reading_pause(self, seconds: float = 4.0) -> None:\n        # Humans read; bots rush. Pause like a person skimming a paragraph.\n        time.sleep(max(0.4, random.gauss(seconds, seconds * 0.25)))"} lang="python" filename="behavior.py" />
+
+The scroll function is the most important piece. Calling `scrollIntoView()` is an instant tell because no human produces a single jump event. A wheel-event series with approximate durations is the behavioral approximation of a thumb on a trackpad — and, crucially, it costs nothing to implement.
+
+We added one global rule: never issue two autonomous navigation events within the same second. And we deliberately leave some pages half-read. Perfect, exhaustive behavior is itself a bot signal, because real users abandon pages constantly.
+
+## The CAPTCHA Threshold: When to Fight, When to Retreat
+
+We tried CAPTCHA-solving services in week two. The economics looked good on paper: two to four dollars per 1,000 solves, a fraction of what residential bandwidth costs. The economics forgot one thing: every solve trains the vendor's classifier that the IP-plus-browser combination is resolvable. Solve a CAPTCHA from a flagged identity and you just taught the system that the identity responds to challenges. The next CAPTCHA arrives sooner, from a higher-confidence model.
+
+In production, we treat CAPTCHAs as a circuit breaker, not a puzzle. Each identity has a threshold: two CAPTCHAs in an hour puts it into cooldown for six hours. A third failure in 24 hours retires the identity for static analysis.
+
+
+<CodeBlock code={"from dataclasses import dataclass, field\nfrom datetime import datetime, timedelta\n\n\n@dataclass\nclass IdentityState:\n    id: str\n    captcha_events: list[datetime] = field(default_factory=list)\n\n    def observe_captcha(self, now: datetime) -> bool:\n        \"\"\"Returns True if the identity should be cooled down.\"\"\"\n        self.captcha_events = [t for t in self.captcha_events if t > now - timedelta(hours=1)]\n        self.captcha_events.append(now)\n        return len(self.captcha_events) >= 2\n\n    def can_retry(self, now: datetime) -> bool:\n        last = max(self.captcha_events, default=now - timedelta(hours=1))\n        return now - last > timedelta(hours=6)\n\nstate = IdentityState(id=\"profile-07\")\nif state.observe_captcha(datetime.utcnow()):\n    print(\"cooling down profile-07 for 6 hours\")"} lang="python" filename="breaker.py" />
+
+The threshold numbers came from measurement. We watched the challenge-rate distribution across forty identities for a week and found that a single CAPTCHA was common noise, but two in an hour predicted a ban within three hours with near certainty. Six hours of cooldown is enough for the risk score to decay on most vendors; retrying sooner just adds more evidence to the ban decision.
+
+## Proxy Architecture That Doesn't Fall Apart
+
+The naive approach — rotate the proxy on every request — makes detection worse. Each new IP resets DNS caches and connection pools, producing a burst of fresh TLS connections. That pattern is itself a bot signature. We use sticky sessions: an identity keeps the same proxy for the duration of its life, and we only rotate when the proxy dies or the identity is banned.
+
+We use residential proxies in production. Datacenter proxies are cheap and we still use them for development, but they burn out within minutes on any strict site. The table reflects what we measured across two months of scraping a set of moderately protected targets:
+
+| Proxy type | Cost / GB | IP churn | Relative challenge rate | Best use |
+|---|---|---|---|---|
+| Datacenter | $0.50-1.00 | Very high | High | Dev, staging, unprotected targets |
+| Residential (rotating) | $5-15 | High | Moderate | General production, high page volume |
+| Residential (sticky) | $8-20 | Low | Low | Heavy fingerprinting, login-gated sessions |
+| Mobile | $15-30 | Low | Very low | Geo-specific content, app stores |
+
+### Warming a cold IP
+
+A fresh IP from a residential pool is immediately suspicious if it opens with a burst of traffic. We warm every new proxy: five requests over ten minutes on a harmless endpoint, then a slow ramp to full rate. Warming costs time but saves lives — identity status goes cold → warming → hot, and the hot state is the only one allowed to drive real volume. The cold column in the identity table is not decorative; it gates all traffic.
+
+## Logging, Metrics, and the Post-Mortem Habit
+
+The most valuable code in DoxDock is not the scraper. It is the logging layer. Every response — good or bad — is recorded with identity id, proxy, status code, response headers, and a boolean indicating whether the page contained a challenge. On any non-200 or challenge, we also capture a screenshot, a DOM snapshot, and the HAR.
+
+That data is the raw material of every improvement. We plot the challenge rate per identity and per proxy ISP on a three-day moving average. Nothing changes in the scraper based on a single 403; changes come only from moving-average trends. When the rate climbs across all identities, the vendor shipped a new fingerprint rule and we inspect the next failure's DOM snapshot for the new leak. When it climbs on one ISP, we drop that proxy tier.
+
+
+<Callout type="tip">On every block, save the screenshot and DOM snapshot. In six months of maintenance, screenshots have diagnosed more issues than any single log line: stalled challenges, fake 200s, consent walls, and geographic redirects.</Callout>
+
+Maintaining this habit turns the anti-bot fight from a guessing game into an iterative engineering loop. The classifier is a moving target; the only way to hit it is to observe it continuously and adapt in small increments.
+
+
+<Quiz question={"Why did DoxDock's first production run die within minutes despite having perfect HTTP logic?"} options={["The proxy IPs were already blacklisted by Cloudflare", "The browser session was statistically distinguishable from a human", "The scraper was sending requests too fast"]} answer={1} explanation={"The HTTP layer was flawless, but the client exposed automation signals such as navigator.webdriver and deterministic behavior, which anti-bot classifiers score as bot traffic."} />
+
+
+<KeyTakeaways items={["Anti-bot systems are probabilistic classifiers: your job is to make your session statistically indistinguishable from a human, not to \"break\" a challenge.", "Patch the browser fingerprint (navigator.webdriver, plugins, languages) before any page script runs, via `context.add_init_script`.", "Rotate full identities \u2014 UA, viewport, timezone, proxy \u2014 not just IPs. A foreign IP with a mismatched timezone is a classic false positive.", "Model human timing: jitter every keystroke, scroll with wheel events, and insert real reading pauses. Deterministic intervals are a dead giveaway.", "Set a CAPTCHA threshold per identity. A circuit breaker that cools down a profile is cheaper than burning it on a solve service.", "Log everything: screenshots, DOM snapshots, HAR captures, and proxy state on every block. Without structured failure data, the next iteration is a guess."]} />
+
+
+<Faq items={[{"q": "Is Playwright or Puppeteer better for anti-bot survival?", "a": "They're the same engine, so neither wins on fingerprint. The deciding factors are ecosystem and runtime. We chose Playwright for its context-isolation API and first-class multi-browser support. The same stealth patches apply to both."}, {"q": "Can you truly bypass Cloudflare?", "a": "No, and you shouldn't aim for 100%. A scraper that survives keeps its challenge rate under the threshold that triggers manual review. If you hold 85-90% success on a hard target, that's a win. The moment you start winning 100%, you've likely broken a detection that the vendor will patch within weeks."}, {"q": "How much does this cost per identity?", "a": "Roughly $8-15 per GB of residential traffic plus a few cents for profile storage. Our fleet of 40 identities costs well under $50 per day. If a target's value can't cover that, don't build a long-lived scraper for it; write a one-off script and accept the block."}, {"q": "What is the first thing you check when scrapes start failing?", "a": "The three-day moving average of challenge rate, broken down by identity and proxy ISP. A single 403 is a normal event. A trend across all IDs points to a fingerprint change. A spike on one ISP points to a proxy problem."}]} />
+
+## Conclusion
+
+The anti-bot arms race does not end. Every tactic in this article is a snapshot of a moving target, and the vendors will keep shipping new classifiers, new browser checks, and new behavioral models. That is fine. Our goal was never to win the war; it was to keep a scraper alive long enough for the data to be worth more than the cost of collecting it.
+
+The architecture that emerged from the rebuild is boring by design. Patch a handful of known leaks. Run headful Chromium under Xvfb. Keep each identity's geo-consistent story intact. Jitter the behavior. Respect the CAPTCHA circuit breaker. Warm the proxies. Log everything. None of these steps is exotic, and that is exactly the point — a scraper that survives is one that gives the classifier nothing unusual to work with.
+
+If I had to compress the whole learning into one line, it would be this: do not build a scraper that hides. Build a session that belongs. The moment your browser context feels like a neighbor's slow, messy, half-ignored browsing session, the walls come down on their own.
+
+DoxDock is the living artifact of that lesson, and it is still running in production today. [View the project on GitHub](https://github.com/3ni8ma/DoxDock).

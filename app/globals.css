@@ -535,3 +535,157 @@ h1, h2, h3, h4, h5, h6 {
     font-size: 1.25rem;
   }
 }
+
+/* ---------- Blog MDX enhancements ---------- */
+
+.prose-container table {
+  width: 100%;
+  margin: 1.25rem 0;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.prose-container thead th {
+  background: rgba(255, 255, 255, 0.06);
+  color: #00f2fe;
+  font-weight: 600;
+  text-align: left;
+  padding: 0.625rem 0.75rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+  letter-spacing: 0.03em;
+}
+
+.prose-container tbody td {
+  color: rgba(255, 255, 255, 0.78);
+  padding: 0.625rem 0.75rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  vertical-align: top;
+}
+
+.prose-container tr:nth-child(even) td {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.prose-container blockquote {
+  margin: 1.25rem 0;
+  padding: 0.25rem 0 0.25rem 1.25rem;
+  border-left: 2px solid rgba(0, 242, 254, 0.55);
+  color: rgba(255, 255, 255, 0.65);
+  font-style: italic;
+}
+
+.prose-container hr {
+  border: none;
+  height: 1px;
+  margin: 2.5rem 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.15),
+    transparent
+  );
+}
+
+.prose-container :not(pre) > code {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 0.375rem;
+  padding: 0.125rem 0.375rem;
+  font-family: var(--font-mono);
+  font-size: 0.8125em;
+  color: #00f2fe;
+}
+
+.prose-container kbd {
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-bottom-width: 2px;
+  border-radius: 0.375rem;
+  padding: 0.125rem 0.4rem;
+  font-family: var(--font-mono);
+  font-size: 0.8125em;
+  color: #ffffff;
+}
+
+.codeblock-body {
+  margin: 0;
+  padding: 1rem 1.25rem;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  line-height: 1.75;
+  color: rgba(255, 255, 255, 0.85);
+  tab-size: 2;
+}
+
+.hljs-comment,
+.hljs-quote {
+  color: rgba(255, 255, 255, 0.35);
+  font-style: italic;
+}
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-doctag {
+  color: #ff7edb;
+}
+
+.hljs-string,
+.hljs-regexp,
+.hljs-addition {
+  color: #9ee6a1;
+}
+
+.hljs-number,
+.hljs-symbol,
+.hljs-bullet {
+  color: #f1fa8c;
+}
+
+.hljs-title,
+.hljs-title.class_,
+.hljs-title.function_,
+.hljs-function .hljs-title {
+  color: #79e4ff;
+}
+
+.hljs-attr,
+.hljs-variable,
+.hljs-template-variable,
+.hljs-parameter {
+  color: #ffb86c;
+}
+
+.hljs-built_in,
+.hljs-type,
+.hljs-class .hljs-title {
+  color: #8be9fd;
+}
+
+.hljs-deletion {
+  color: #e60049;
+}
+
+.hljs-name,
+.hljs-tag {
+  color: #79e4ff;
+}
+
+.hljs-section {
+  color: #00f2fe;
+  font-weight: 600;
+}
+
+.hljs-emphasis {
+  font-style: italic;
+}
+
+.hljs-strong {
+  font-weight: 600;
+}
+
+.hljs-meta,
+.hljs-selector-id,
+.hljs-selector-class {
+  color: #d67964;
+}

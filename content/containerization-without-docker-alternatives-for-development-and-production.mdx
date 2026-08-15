@@ -2,44 +2,159 @@ export const title = "Containerization Without Docker: Alternatives for Developm
 export const date = "August 04, 2026"
 export const tags = ["Containers", "Docker", "Podman", "Nix", "DevOps"]
 export const repo = "https://github.com/3ni8ma/cli-tool"
+export const difficulty = "Intermediate"
+export const generated = "v2"
 
-## Why Look Beyond Docker
+import { Callout, CodeBlock, Faq, KeyTakeaways, Quiz } from "@/components/mdx"
 
-Docker has become synonymous with containers, but alternatives like Podman, Nix, and Firecracker offer compelling advantages for specific use cases. This post compares the ecosystem from a developer's perspective.
+Somewhere between a Friday renewal notice from Docker, Inc. and a Monday CI outage, we stopped treating Docker as a default and started treating it as a choice.
+
+The project that forced this was [cli-tool](https://github.com/3ni8ma/cli-tool), a small Go program that reads a YAML description of a microservice topology and runs it: it starts containers, wires their networking, executes a health-check sequence, and reports pass or fail. A disposable integration lab for one or two services. For its first year, cli-tool shelled out to `docker run`, and it worked. Then, within a single week, three things happened: a fresh CI runner had no Docker daemon installed, a colleague's Linux laptop gave up after its third dockerd restart that month, and the Docker Desktop VM on my Mac quietly claimed 6 GB of my 16 GB of RAM.
+
+So we removed Docker from the loop: Podman for running containers, buildah for building images, Nix for the development environment, and OCI images as the distribution artifact. This article is the write-up of that migration — what worked, what didn't, and what we still keep Docker around for.
+
+## The Day Docker Desktop Sent Us a Bill
+
+To be fair, the license fee was not the problem. Docker Desktop's pricing page has a free tier for small companies, and our five-person team technically qualified. The bill was symbolic. The real cost was operational: every cli-tool test run depended on a privileged daemon that had to be installed, patched, and kept alive on whatever machine happened to run it.
+
+cli-tool's test matrix spins up a typical topology of four containers: a Postgres instance, a Redis cache, the service under test, and a load generator. Multiply that by three iterations and you get a dozen container starts per run. With Docker, each start went through `dockerd`, which meant each start also went through a root-owned process listening on a Unix socket. On shared CI runners, that translated to frequent permission errors. On laptops, it meant the daemon occasionally wedged the entire VM, and the fix was always the same: restart Docker Desktop and wait for it to chew 50% of your RAM again.
+
+We started the migration as an experiment, not a mandate. The constraint was that cli-tool had to keep working with zero changes to its YAML spec. The container engine underneath, we decided, was an implementation detail — and it was time to change the implementation.
+
+## Decomposing Docker: The Image Is the Standard, the Daemon Is the Baggage
+
+The first thing we did was decompose "Docker" into the pieces that actually matter:
+
+- **The client** — the `docker` CLI you type into a terminal.
+- **The daemon** — `dockerd`, a long-running privileged process that listens on `/var/run/docker.sock`.
+- **The image format** — the OCI image spec: layered filesystem tarballs with a manifest, config, and layer digests.
+- **The runtime** — `runc` or `crun`, the low-level process launcher that creates namespaces, cgroups, and pivot_roots.
+
+The image format is the portable, valuable part. An OCI image can be built, inspected, copied, and run by a dozen different tools. The daemon is the fragile, privileged, human-problem part. The insight that unblocked us: you can produce and consume OCI images without ever running a daemon. Docker is one implementation of a standard, not the standard itself.
+
+That reframing made the rest of the migration a shopping list. We need:
+
+1. A way to *run* containers without a central daemon — Podman.
+2. A way to *build* images without a daemon — buildah.
+3. A way to make the *development environment* reproducible without containers — Nix.
+4. A way to *distribute* the OCI images we build — skopeo plus a container registry.
+
+## Podman: A Drop-In That Drops the Daemon
+
+Podman is the tool we reach for first now. Architecturally, it does what the name implies: it manages *pods* of containers, and it does so with a fork-exec model instead of a client-server model. When you run `podman run`, the Podman process forks a small monitor called `conmon`, which spawns `runc` or `crun` directly. There is no daemon between your command and your container.
+
+This has a practical consequence that matters for cli-tool: you don't need `sudo`, and you don't need a process running as root on the host. A CI runner can run Podman in user space, which means no privileged containers, no mounted `/var/run/docker.sock`, and no security audits from your platform team.
+
+But here's the trick that made the migration cheap: Podman exposes a Docker-compatible API. The Go Docker SDK we already used for cli-tool's container operations talks to Podman's socket without a single code change. We swapped the endpoint and kept the library.
 
 
-## Why Look Beyond Docker
+<CodeBlock code={"# Start Podman's Docker-compatible API on an unprivileged socket\npodman system service --time=0 unix:///tmp/podman.sock &\n\n# cli-tool reads DOCKER_HOST and uses the Docker Go SDK underneath\nexport DOCKER_HOST=unix:///tmp/podman.sock\n\ncli-tool run --spec ./test-apps/checkout.yaml --iterations 3\n\nkill %1"} lang="bash" />
 
-Docker Desktop's licensing changes, the Moby project's complexity, and the daemon-based architecture have driven interest in alternatives. For development, rootless containers and better macOS integration are key concerns. For production, microVM isolation and smaller attack surfaces matter more.
+In our CI, this is even simpler: GitHub Actions runners get Podman installed via `apt`, and cli-tool never knows the difference.
 
+## Rootless Means the Tool Runs Without Sudo
 
-## Podman: Rootless by Default
+Rootless containers are where Podman separates itself from Docker's default posture. The mechanism is user namespaces: a container's UID 0 is mapped to your unprivileged UID on the host, and everything inside the container is owned by a range of unmapped UIDs from the host's perspective. Networking is handled by `slirp4netns` or `pasta`, which proxy packets through user-space, and storage falls back to `fuse-overlayfs`.
 
-Podman uses a fork-exec model (no daemon) and runs containers rootless by default. Pods (groups of containers sharing namespaces) map naturally to Kubernetes pods. The CLI is Docker-compatible (`alias docker=podman`), making migration trivial. Builds use Buildah under the hood, which supports Dockerfiles.
+It comes with costs. User-space networking adds measurable latency — we saw roughly 10-15% throughput loss in our load-generator container compared to the host network on the same runner. Local disk I/O through `fuse-overlayfs` can be slower than native overlayfs. For cli-tool's test workloads, which are I/O-bound on small database writes and network-bound on localhost traffic, the difference was imperceptible. For a production web service, I would measure before switching.
 
-
-## Nix and NixOS: Reproducible Builds
-
-Nix isn't a container runtime — it's a purely functional package manager and build system. Nixpkgs defines packages as deterministic build functions. `nix run`, `nix shell`, and `nix develop` provide ephemeral environments without containers. `dockerTools.buildImage` generates Docker images from Nix derivations with minimal layers and perfect reproducibility.
+The security win is substantial, though. cli-tool can now orchestrate containers on a shared runner with no root processes, which is a requirement our platform team happily enforced after the security review flagged the Docker socket mount.
 
 
-## Firecracker: MicroVM for Serverless
+<Callout type="warn">Rootless Podman still needs setuid binaries (newuidmap, newgidmap) installed on the host. If /etc/subuid has no ranges for your user, podman run will fail with a cryptic "cannot create user namespace" error. Verify with podman info before debugging anything else.</Callout>
 
-AWS's Firecracker runs microVMs with sub-second boot times and 5MB memory overhead per VM. Each microVM runs a single process with its own kernel — stronger isolation than containers. The tradeoff: no container image support (requires ext4 rootfs), no orchestration built-in (needs Fly Machines, AWS Fargate, or custom tooling).
+## Building Images with buildah, Not a Dockerfile Daemon
 
+The flip side of running containers is building the images cli-tool runs. Docker's build process goes through the daemon, which takes the Dockerfile, streams the build context, and writes layers into the daemon's storage. The step we always hated: `docker build` doesn't work if `dockerd` is down, and it runs as root by default.
 
-## OCI Runtime Alternatives
-
-runC (the default Docker runtime) has had multiple CVEs. Alternatives include: crun (C-based, faster, less memory), gVisor (userspace kernel for stronger isolation), and Kata Containers (lightweight VM per container using QEMU or Firecracker). Each makes different tradeoffs between performance, compatibility, and security.
-
-
-## Choosing the Right Tool
-
-For local development: Podman or Nix. For CI/CD: Docker (most GitHub Actions runners support it). For production with strong isolation: Firecracker or gVisor. For reproducibility: Nix. The ecosystem is healthier than ever — Docker is no longer the only mature option.
+buildah builds OCI images using the same low-level primitives as Podman runs: mount namespaces and user namespaces. It reads Dockerfiles fine — `buildah bud -f Containerfile` works with a standard Dockerfile — but it also exposes an imperative API that fits a CLI tool much better.
 
 
----
+<CodeBlock code={"# Build cli-tool's image without a Dockerfile and without a daemon\nctr=$(buildah from alpine:3.19)\nbuildah copy \"$ctr\" ./bin/cli-tool /usr/local/bin/cli-tool\nbuildah config --entrypoint '[\"/usr/local/bin/cli-tool\"]' \"$ctr\"\nbuildah commit --rm \"$ctr\" cli-tool:latest\n\n# Inspect the result without a runtime\nskopeo inspect containers-storage:cli-tool:latest"} lang="bash" />
 
-The container ecosystem has matured beyond Docker. Podman, Nix, and microVM runtimes each solve specific problems better than Docker, and understanding their tradeoffs helps choose the right tool for each job.
+The command sequence reads like a recipe, which is exactly the point. Each step is explicit: pull a base image, copy a binary in, set the entrypoint, commit. Nothing runs as root. Nothing depends on a daemon. We now build the cli-tool container in CI using buildah, which means the build step on a contributor's laptop is byte-for-byte the same as the build step in our pipeline.
 
-[View on GitHub](https://github.com/3ni8ma/cli-tool)
+
+<Callout type="tip">skopeo is the tool nobody knows they need — it can inspect, copy, and delete images from registries without pulling them into a daemon's storage. skopeo inspect docker://alpine:latest replaces half of what we used to use docker pull for.</Callout>
+
+## Nix: The Dev Environment Docker Couldn't Give Us
+
+The second half of "containerization without Docker" is the inverse problem: the development environment. We used to keep a dev container with Go toolchain, linters, and helpers pinned inside a Dockerfile. It worked, but it had the same daemon dependency, and every tool version bump meant rebuilding the image and invalidating everyone's cache.
+
+We replaced the dev container with a Nix flake. Nix builds environments from a declarative spec and stores them in `/nix/store`, hash-addressed by their inputs. Same inputs, same environment, on every machine. `nix develop` drops you into a shell with the exact tools pinned in the flake — no image pull step, no daemon.
+
+
+<CodeBlock code={"{\n  inputs.nixpkgs.url = \"github:NixOS/nixpkgs/nixos-24.05\";\n\n  outputs = { self, nixpkgs }: {\n    devShells.x86_64-linux.default =\n      nixpkgs.legacyPackages.x86_64-linux.mkShell {\n        packages = with nixpkgs.legacyPackages.x86_64-linux; [\n          go_1_22\n          golangci-lint\n          podman\n          buildah\n          skopeo\n        ];\n      };\n  };\n}"} lang="nix" filename="flake.nix" />
+
+The subtle difference between Nix and containers: containers isolate at *runtime*, Nix isolates at *build time*. A container gives you a filesystem. Nix gives you a deterministic environment where the hash of every input is known. For a CLI tool, that matters because our distributable artifact is a static Go binary:
+
+
+<CodeBlock code={"CGO_ENABLED=0 go build -trimpath -ldflags=\"-s -w\" -o bin/cli-tool ./cmd/cli-tool"} lang="bash" />
+
+That binary, built inside `nix develop`, is reproducible across our machines — same toolchain, same Go version, same linker flags. Docker never gave us that; it gave us a stable *surrounding*, not a stable *output*.
+
+## Distribution: OCI Images Without the Docker Client
+
+The production story for cli-tool is: users pull an OCI image and run it, or they grab the static binary. Both artifacts are produced in CI — the binary via Go, the image via buildah. Neither requires Docker to be present.
+
+One detail that surprised us: the Go Docker SDK we embedded in cli-tool works unmodified against Podman's socket. The `engine.go` file below is the actual selector we wrote during the migration:
+
+
+<CodeBlock code={"func detectEngine() (string, error) {\n\tif host := os.Getenv(\"DOCKER_HOST\"); host != \"\" {\n\t\treturn host, nil\n\t}\n\tfor _, sock := range []string{\n\t\t\"/run/user/1000/podman/podman.sock\",\n\t\t\"/var/run/docker.sock\",\n\t} {\n\t\tif _, err := os.Stat(sock); err == nil {\n\t\t\treturn \"unix://\" + sock, nil\n\t\t}\n\t}\n\treturn \"\", errors.New(\"no container engine socket found\")\n}"} lang="go" filename="engine.go" />
+
+When cli-tool starts on a fresh machine, it detects whatever socket exists. Podman first, Docker as a fallback. The Docker client library speaks the same REST dialect to both, so the engine selection is the only change we needed in the codebase.
+
+## What We Kept Docker For
+
+The migration was not a purge. Docker remains in our stack in three places.
+
+First, `docker compose` still runs the local development database stack. Podman's compose compatibility has improved, but on macOS it still lags on volume mount semantics and container-to-container DNS compared to Docker Desktop. For one `docker compose up` on a developer laptop, staying on Docker is the pragmatic choice.
+
+Second, Dockerfiles remain the lingua franca of base images. buildah reads them, but the ecosystem of published Dockerfiles is where base image configuration lives. We write Dockerfiles for our services and consume them with buildah. The format outlives the daemon.
+
+Third, Docker remains the default runtime in some of our production Kubernetes nodes via containerd. That's fine. The point of the migration was not that Docker is bad; it's that Docker is *one* way to run OCI images, and it is no longer a prerequisite for anything we build.
+
+## The Container Engine Tradeoff Matrix
+
+| Tool        | Daemon needed | Rootless | Builds images | Best role |
+|-------------|---------------|----------|---------------|-----------|
+| Docker      | Yes           | Painful  | Yes           | Desktop UX, compose ecosystems, K8s nodes |
+| Podman      | No            | Native   | No            | CI, laptops, drop-in Docker replacement |
+| buildah     | No            | Native   | Yes           | Image builds in pipelines |
+| Nix         | No            | N/A      | No (builds binaries) | Dev environments, reproducible artifacts |
+| containerd + nerdctl | Yes (shim daemon) | Partial | Yes | Kubernetes-backed production clusters |
+
+Our stack now reads diagonally across this table: Nix for development, buildah for building, Podman for running, and Docker only where its UX genuinely wins.
+
+## Lessons We're Still Paying For
+
+I'll close with the lessons that cost us actual hours.
+
+**The Docker SDK is not a Podman SDK.** The compatibility layer is good, but not complete. `podman system service` implements most of the Docker API, but rarely-used endpoints like `GET /containers/{id}/stats` buffer differently, and some socket options are ignored. cli-tool uses a narrow slice of the API — create, start, stop, remove, logs — and that slice is stable. The wider the API surface, the more likely you'll hit a seam.
+
+**Podman machine is still a VM.** On macOS, Podman runs inside a Linux VM, just like Docker Desktop. We initially assumed rootless Podman would fix the laptop RAM problem; it didn't until we capped the VM with `podman machine init --memory 4096`. The daemon left, the hypervisor stayed.
+
+**Bind mounts and rootless storage have a permissions tax.** If you mount a host directory into a rootless container, the files are owned by your UID inside the container, which usually maps to UID 0 in the container's user namespace. This feels backwards on first contact. The fix that works for us: `--userns=keep-id`, or just use named volumes instead of bind mounts.
+
+**CI image builds are slower on first run.** install podman + buildah adds roughly 20-40 seconds per job on GitHub Actions. We cached the apt step with a warmed image and ignored the first-run cost. Total CI time went up about 15%; total CI reliability went up more than that, because the runs are now reproducible and don't require a running daemon.
+
+Finally: **do not underestimate the value of a daemon actually being there.** Docker's failure modes are visible and handled by a huge community. Podman's failure modes are newer, and the error messages are sometimes just "operation not permitted" with no further context. The migration is worth it — for us, the daemon was the bottleneck, and removing it let cli-tool run anywhere. But it's not a free lunch; it's a different menu.
+
+
+<Quiz question={"Why did we replace Docker with Podman inside cli-tool's test harness?"} options={["Because Podman is always faster than Docker", "Because Podman's API is incompatible with Docker's", "Because Podman runs rootless without a central daemon, so cli-tool can orchestrate containers on shared CI runners without privileged processes"]} answer={2} explanation={"The core pain was the privileged daemon, not the image format; Podman fixes that while keeping the Docker-compatible API cli-tool already spoke."} />
+
+
+<KeyTakeaways items={["Docker is a compound of client, daemon, image format, and runtime; only the daemon is a liability.", "Podman is a drop-in for development and CI when you stay within the common Docker API surface.", "buildah builds OCI images without a daemon and without root, making CI image builds reproducible and unprivileged.", "Nix replaces dev containers with reproducible build-time environments and produces deterministic binaries.", "Keep Docker where its ecosystem genuinely wins: compose on laptops, containerd in production clusters.", "Detect the container engine at runtime instead of hardcoding a socket; the best CLI tools are engine-agnostic."]} />
+
+
+<Faq items={[{"q": "Can I still use my existing Dockerfiles if I switch to buildah?", "a": "Yes. buildah bud reads standard Dockerfiles and Containerfiles interchangeably. The only caveats are flags with subtly different semantics, like --network=host in rootless mode, which requires extra configuration."}, {"q": "Is Nix a container runtime?", "a": "No. Nix is a package manager and build system that guarantees reproducible environments. It can build OCI images via pkgs.dockerTools.buildImage, but its main role here is replacing dev containers and producing reproducible binaries, not running containers."}, {"q": "Will docker-compose files work with Podman?", "a": "Mostly. podman compose (via the compose plugin) handles common services, ports, and volumes well. We hit edge cases with custom volume drivers and some networking modes, which is why we still use Docker compose for our local database stack."}, {"q": "Does this work on macOS and Windows?", "a": "Podman runs there via a Linux VM managed by podman machine, so rootless benefits are partially negated by the VM layer. The full rootless experience \u2014 no VMs, no daemon \u2014 is primarily a Linux advantage."}]} />
+
+## Conclusion
+
+The migration away from Docker was not a statement about Docker's quality. Docker solved the container problem for an entire industry, and its failure modes are familiar and well-documented. The problem we solved was different: cli-tool needed to run containers as a side effect of a single command, on machines we don't control, without a privileged daemon. That requirement reshaped our entire toolchain.
+
+What emerged is a stack where each layer is narrow and responsible for one thing: Nix makes the build deterministic, buildah makes the image build unprivileged, Podman makes the runtime daemonless, and skopeo moves images between registries without a storage engine. Each tool is worse than Docker at the thing Docker is best at — being a single, integrated experience. Together, they are better at the thing that mattered to us: being reproducible, rootless, and boring.
+
+If you are building a CLI or a service that touches containers, I would not tell you to abandon Docker. I would tell you to isolate the engine behind a small API surface and then shop around. The wiring in cli-tool took about a week; the freedom from daemons has lasted two years and counting.
+
+[View the project on GitHub](https://github.com/3ni8ma/cli-tool)

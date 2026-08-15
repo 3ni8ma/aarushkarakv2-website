@@ -1,0 +1,148 @@
+export const title = "Building HELIOS: A Gesture-Controlled AI OS in the Browser"
+export const date = "August 15, 2026"
+export const tags = ["HELIOS", "Three.js", "MediaPipe", "AI", "Spatial Computing"]
+export const repo = "https://github.com/3ni8ma/HELIOS"
+export const difficulty = "Advanced"
+export const generated = "v2"
+
+import { Callout, CodeBlock, Faq, KeyTakeaways, Quiz } from "@/components/mdx"
+
+Every operating system is a set of physical metaphors, and most of them are stuck in 1984. I spent years punching a mouse to move rectangles across a screen, clicking tiny close targets, and dragging windows by title bars that were never exactly where my hand wanted to go. So I built HELIOS, a spatial, gesture-controlled AI shell that runs entirely in the browser. You pinch to grab a window, point to select it, speak to have an AI keep context of what you are looking at, and the whole thing runs in a normal Chromium tab with only a webcam, Three.js, and MediaPipe Hands.
+
+HELIOS is not a replacement OS. It is a proof that the web platform can now do what we used to need headsets and desktop revenue for: spatial input, real-time AI context, and a window manager that lives outside the DOM. The code is open source at [GitHub](https://github.com/3ni8ma/HELIOS), and this article is the engineering story behind it.
+
+The hardest part was never the AI. It was making gestures feel deterministic when the raw input is a bundle of 21 noisy 3D landmarks arriving at 30 frames per second. This is the story of the wager, the architecture, and the failure modes that shaped the final system.
+
+## The wager: an OS in a browser tab
+
+I started HELIOS with three constraints: no native code, no head-mounted display, and no integration that requires a user to install a runtime. The browser would be the OS, the webcam would be the sensor, and WebGL would be the display. That was the whole pitch.
+
+The first prototype was ugly. I rendered a single flat plane in Three.js, put a fake window texture on it, and used MediaPipe’s hand landmarks to push a cursor around. It felt like a tech demo with a lot of lag. The breakthrough came when I stopped emulating a mouse and started modeling gestures. The first time I pinched two fingers together, dragged a plane sideways, and watched it move as a physical object while the camera tracked my hand, the wager felt real. No Bluetooth controller. No QR code setup. No proprietary SDK. Just a Chrome tab, a laptop camera, and a few dozen lines of TypeScript.
+
+The technical bet inside that wager is that WebXR is the wrong abstraction for spatial computing on devices people already own. WebXR is great when you want to strap on a headset and leave the room. But most spatial interactions happen while you are sitting in front of a screen, and the most durable spatial sensor you already have is a camera.
+
+## Why not WebXR? Choosing Three.js over the XR ecosystem
+
+WebXR promises a fully immersive 3D scene with controllers, room tracking, and depth sensing. It also demands either a dedicated VR headset or an AR-capable phone. Our target device is a normal laptop with a webcam and a desktop browser. In that environment WebXR does not provide hand tracking without a headset that has built-in cameras. That was the deal-breaker.
+
+I evaluated both stacks early, and the tradeoffs were clear:
+
+| | WebXR | Three.js + MediaPipe Hands |
+|---|---|---|
+| Hardware required | VR/AR headset or AR-capable phone | Any webcam + browser |
+| Input source | Controller button/trigger events | 21 landmarks from RGB camera |
+| Immersion | Full screen/exclusive XR session | Augments the existing desktop |
+| Hand tracking | Only on specific devices | Works in any Chromium tab |
+| Fallback input | Difficult to implement | Native mouse/keyboard fallback |
+| Distribution | Requires browser XR API support | Plain web app, open any URL |
+
+Choosing Three.js had a hidden benefit: HELIOS runs in a pop-up window next to your existing apps. It does not claim exclusive control over the display. That is closer to how people actually use AI on a daily basis: a copilot beside you, not a world replacing your monitor.
+
+
+<Callout type="info">Treat the hand as an event bus, not as a cursor. A cursor implies position only; a hand implies predicates like pinching, pointing, moving, and resting.</Callout>
+
+## Hand tracking as an input bus, not a party trick
+
+The first mistake I made with MediaPipe was treating landmark data as a single cursor position. MediaPipe Hands gives you 21 landmarks per hand, each with normalized `x`, `y`, `z`, and visibility. But the meaning of that data only exists across time. A pinch is not a frame; it is a transition from open fingers to closed fingers. A drag is not a coordinate; it is a pinch that stays held while the wrist moves.
+
+So I built an input bus. Every time MediaPipe produced a hand frame, we normalized it into a `HandFrame` object and published it to every subsystem that cared: the gesture FSM, the window hit-tester, a dwell tracker, and the AI context collector. Each subscriber reacted independently and asynchronously. That separation stopped the UI from coupling to the MediaPipe update loop.
+
+
+<CodeBlock code={"export type Handedness = 'left' | 'right';\n\nexport interface HandFrame {\n  timestamp: number;\n  handedness: Handedness;\n  landmarks: Float32Array; // 63 floats: 21 landmarks * (x, y, z), normalized\n  scale: number;           // hand scale used to normalize distances\n}\n\ntype HandListener = (frame: HandFrame) => void;\n\nexport class HandBus {\n  private listeners = new Set<HandListener>();\n  private latestFrame: HandFrame | null = null;\n\n  publish(frame: HandFrame): void {\n    this.latestFrame = frame;\n    for (const listener of this.listeners) listener(frame);\n  }\n\n  subscribe(listener: HandListener): () => void {\n    this.listeners.add(listener);\n    return () => this.listeners.delete(listener);\n  }\n\n  peek(): HandFrame | null {\n    return this.latestFrame;\n  }\n}"} lang="typescript" filename="src/gesture-bus.ts" />
+
+The key decision here was allocation discipline. MediaPipe runs at 30 fps; if every frame creates a new array and then throws it away, the garbage collector will cause stutter. We reuse a single `Float32Array` and copy into it. The `HandBus` is the only place where raw frames are allowed to be mutated; subscribers read the same frame and derive their own state from it.
+
+## The gesture grammar: from raw landmarks to deterministic intents
+
+The core contribution of HELIOS is a small gesture grammar built as a finite-state machine per hand. MediaPipe’s classification models are excellent at telling you which finger is extended, but they are not good at answering the question "is this a click, a drag, or a swipe?" That question requires temporal context. A pinch that lasts 80ms and returns to open is a click. A pinch that stays under 0.35 normalized distance for 150ms while the hand moves is a drag. A pinch that rapidly opens then closes again is a flick, which we route to window close or mode switch.
+
+### Two-stage classification
+
+We use a two-stage pipeline. Stage one converts raw landmarks into a clean distance metric: the normalized Euclidean distance between the thumb tip and index fingertip. Dividing by hand scale makes the metric invariant to whether the user is sitting close to or far from the camera. Stage two feeds that scalar into a state machine with hysteresis.
+
+The hysteresis was non-negotiable. A raw distance threshold will flicker at the boundary; every gesture system hits the same problem. We close the pinch at 0.30 and only release it at 0.42. Between those thresholds the FSM keeps whatever state it is already in.
+
+
+<CodeBlock code={"export enum GestureState {\n  Rest = 'rest',\n  Pinching = 'pinching',\n  Dragging = 'dragging',\n}\n\nconst PINCH_CLOSE = 0.30;\nconst PINCH_OPEN = 0.42;\nconst DRAG_HOLD_MS = 120;\n\nexport class GestureFSM {\n  private state = GestureState.Rest;\n  private pinchEnteredAt = 0;\n\n  update(distance: number, now: number): GestureState {\n    switch (this.state) {\n      case GestureState.Rest:\n        if (distance < PINCH_CLOSE) {\n          this.state = GestureState.Pinching;\n          this.pinchEnteredAt = now;\n        }\n        break;\n\n      case GestureState.Pinching:\n        if (distance > PINCH_OPEN) {\n          this.state = GestureState.Rest;\n        } else if (now - this.pinchEnteredAt >= DRAG_HOLD_MS) {\n          this.state = GestureState.Dragging;\n        }\n        break;\n\n      case GestureState.Dragging:\n        if (distance > PINCH_OPEN) {\n          this.state = GestureState.Rest;\n        }\n        break;\n    }\n    return this.state;\n  }\n\n  reset(): void {\n    this.state = GestureState.Rest;\n    this.pinchEnteredAt = 0;\n  }\n}"} lang="typescript" filename="src/gesture-fsm.ts" />
+
+### Steady-state detection
+
+The `Dragging` state only activates if the user holds a pinch for 120ms. That small delay eliminates the ambiguity between click and drag. We also track a "rest" signal: if the centroid of the hand stays within 0.02 normalized coordinates for 600ms, we freeze the pointer. This solved the "Midas touch" problem, where every involuntary hand movement becomes a command. The pointer needs intent, not presence.
+
+This grammar is intentionally small. We only support five meaningful gestures: point to hover, pinch to select, pinch-hold to drag, open palm to open the launcher, and a fist to dismiss. Each gesture maps to a deterministic `UserIntent` that the rest of the system can reason about.
+
+## The spatial window manager: z-index is a lie
+
+In a DOM-based window manager, stacking order is a single integer. When two windows overlap, the browser resolves visibility by painting order. HELIOS does not use the DOM for windows; it uses Three.js planes in a 3D scene. That seems more powerful, but it introduces a problem: real people do not want to rotate windows in three dimensions. They want the same flat rectangles they already understand, but with the ability to reach out and push them aside.
+
+The lesson I learned is that `position.z` is not z-index. A window depth value must participate in raycasting, occlusion, and idle animation, but user interaction should stay in screen-space. In HELIOS, every window is a plane constrained to face the camera. Dragging moves the plane in `x` and `y`; the `z` coordinate only defines stacking order and a subtle scale animation when a window is brought to the front.
+
+
+<CodeBlock code={"import * as THREE from 'three';\n\nexport interface SpatialWindow {\n  id: string;\n  mesh: THREE.Mesh;\n  depth: number;\n}\n\nexport function pickWindow(\n  windows: SpatialWindow[],\n  ndc: THREE.Vector2,\n  camera: THREE.PerspectiveCamera\n): SpatialWindow | null {\n  const raycaster = new THREE.Raycaster();\n  raycaster.setFromCamera(ndc, camera);\n\n  const meshes = windows.map(w => w.mesh);\n  const hits = raycaster.intersectObjects(meshes, false);\n\n  if (hits.length === 0) return null;\n  const hitMesh = hits[0].object as THREE.Mesh;\n  return windows.find(w => w.mesh === hitMesh) ?? null;\n}"} lang="typescript" filename="src/window-manager.ts" />
+
+Each `SpatialWindow` also stores an unrounded "desired depth." When you pinch a window and push it forward, we animate it toward that depth with a spring. The actual stacking order in the Three.js scene is determined by sorting by depth, but a window is never allowed to grow so large that it occludes the camera. That would be a browser full-screen tab pretending to be an OS; it defeats the spatial metaphor.
+
+## Wiring AI into the input loop
+
+The "AI" in HELIOS is not a chatbot bolted on to the side of a canvas. It is an intent parser that receives a structured context object assembled from the same input bus. When you point at a window and say "summarize this," the system builds a prompt with the window’s metadata, the current active element if available, and the transcript. It then calls an LLM through a small proxy server. The response renders into a new spatial window placed next to the one you referenced.
+
+The crucial rule: the AI is never allowed to block a gesture. We measured the latency budget. Pinch-to-click must feel instantaneous, so the FSM stays under 10ms. An LLM round-trip is often 1-2 seconds. If the AI were in the critical path, every gesture would feel broken. Instead, we split the pipeline. Gestures mutate window state immediately. AI responses arrive asynchronously and update a sidecar state object that the renderer picks up on the next `requestAnimationFrame`.
+
+We also limited what the LLM can control. It cannot move the pointer. It cannot summon the camera. It can only request actions through a typed `Command` object:
+
+
+<CodeBlock code={"{\n  \"verb\": \"summarize\",\n  \"targetWindowId\": \"window://notes\",\n  \"language\": \"en\",\n  \"timestamp\": 1725804321000\n}"} lang="text" />
+
+This command grammar keeps the AI honest and makes failures debuggable. If the model gives us a malformed verb, we discard it silently and log it. The hand remains the root of truth; the AI is an advisor, not a driver.
+
+## Performance: staying at 60 fps with a webcam in the loop
+
+The hardest performance challenge in HELIOS was not rendering. It was keeping the frame budget stable while two CPU/GPU-heavy libraries fight for the same thread. MediaPipe Hands can take 12-18ms per frame on a mid-range laptop GPU, and Three.js rendering of 50-80 draw calls costs another 3-5ms. If you are not careful, you end up with 35 fps and a stuttering window manager.
+
+We adopted a simple scheduling model. The camera and MediaPipe inference run at 30 fps, but the Three.js renderer runs on `requestAnimationFrame` at 60 fps. The `HandBus` is the bridge. On every raw frame, we publish to subscribers. If a subscriber like the window manager needs to update, it marks itself dirty. The renderer only re-renders the scene when at least one dirty flag is set or an animation is active. When the hand is still, the frame cost drops to near zero.
+
+We also learned to measure and cap allocation. The biggest hidden cost was temporary typed arrays for landmark coordinates. Reusing a single `Float32Array(63)` buffer saved us from hundreds of garbage collections per second. The effect on frame pacing was immediate: the `requestAnimationFrame` callback stopped getting interrupted by GC pauses.
+
+
+<Callout type="warn">Never allocate a multi-thousand-element typed array in the same synchronous path as hand tracking. A hidden GC pause is the difference between a buttery 60fps and a stutter that feels like a bug in the AI.</Callout>
+
+The production tuning numbers were concrete: MediaPipe at 640x480, 30 fps, running on an RTX 3060 laptop GPU; Three.js with 70 draw calls; total hand-to-screen latency around 45ms. We did not chase zero latency because vision-based hand tracking is inherently late by one or two video frames. Instead we made the remaining latency predictable and visually consistent. When a window follows your hand with a constant 45ms delay, the brain compensates. When the delay wavers between 20ms and 90ms, the gesture feels broken.
+
+## The failure modes that taught us the most
+
+Building HELIOS produced a long list of failures. I want to highlight the four that had the most architectural impact.
+
+First, the Midas touch. The first build mapped every hand movement to a cursor position, which meant my resting hand near the keyboard would move the pointer across the screen. We fixed it with the rest-state detection described above, plus a spatial "activation zone" near the center of the camera frame. The hand has to be inside that zone before its motion counts.
+
+Second, calibration drift. MediaPipe normalized coordinates assume a default camera FOV and aspect ratio, but a user’s webcam might be mounted above or below their monitor. The mapping from hand coordinates to screen coordinates is an affine transform we compute once at startup. We show a quick calibration screen where the user moves their palm to four corners. From then on, the pointer tracks. The math is simple, but without it the pointer lands ten centimeters off.
+
+Third, click versus drag ambiguity. We solved that with the 120ms hold delay in the FSM, but it introduced a new failure: users would try to drag and then release before the transition, resulting in a "sticky drag" where the window jumps forward. We added a visual affordance: the window scales by 1.02 when it enters `Dragging`, so users know they have crossed the threshold.
+
+Fourth, privacy. The webcam feed never leaves the browser. MediaPipe runs locally, and the only data sent to the LLM proxy is a JSON object with gestures, target window metadata, and a text transcript. Users need to know the difference between "the browser sees my hand" and "the AI sees my hand." We put a persistent indicator in the corner of the shell showing whether landmarks or raw frames are being transmitted. Making privacy visible made the architecture better because it forced us to keep inference on-device.
+
+## Why the browser won for spatial computing
+
+I started this project expecting the browser to be the weakest link. It turned out to be the strongest. The reason is not technical novelty; it is permission and distribution. Every operating system has a camera permission model, but the web is the only one where I can send someone a URL and have them running a spatial AI interface in under a minute, no driver installs, no app store review, no headset pairing.
+
+WebAssembly and WebGPU have quietly turned the browser into a legitimate high-performance compute target. MediaPipe Hands runs in WebAssembly with GPU acceleration. Three.js renders thousands of objects at 60fps. The missing ingredient was never runtime performance. It was interaction design that treats the camera as a first-class input device rather than a source of video to be displayed back to the user.
+
+The browser also wins because it supports graceful degradation. When the camera fails, HELIOS falls back to the mouse. When the hand leaves the frame, the window manager stays interactive. That resilience is built into the DOM. A native spatial app usually has no mouse fallback, so it feels like a dead end. Our browser-based shell can always return to the desktop metaphor, which makes the spatial metaphor feel like an enhancement instead of a takeover.
+
+
+<Quiz question={"Why does HELIOS use a finite-state machine with hysteresis for gesture detection instead of classifying every frame independently?"} options={["Because it reduces GPU usage by 40%", "Because gestures are temporal transitions and hysteresis prevents noisy frames from flipping state", "Because WebXR requires state machines for controller input"]} answer={1} explanation={"Gestures are temporal transitions, so a state machine with a close-threshold and a higher release-threshold prevents a single noisy frame from flipping the gesture on and off."} />
+
+
+<KeyTakeaways items={["Treat gestures as temporal state transitions, not single-frame classifications.", "Use an event bus between hand tracking, window management, and AI so no subsystem blocks the input loop.", "Hysteresis and rest-state detection are the cheapest fixes for the Midas touch and jitter.", "Keep the AI out of the critical path; gestures mutate the UI immediately, AI updates asynchronously.", "Reuse typed arrays and measure allocation pressure in real-time input pipelines.", "The browser is a viable spatial computing runtime when you design for fallback and portability."]} />
+
+
+<Faq items={[{"q": "Does HELIOS require specialized hardware like a VR headset or depth sensor?", "a": "No. A standard webcam with at least 640x480 resolution is enough. MediaPipe Hands estimates 3D landmarks from a single RGB frame, so no depth camera is needed."}, {"q": "Is HELIOS actually an operating system?", "a": "No, it is an AI shell and spatial interaction layer that runs inside a browser tab. It manages its own windows, handles gesture input, and coordinates AI context, but it does not manage processes or files. It is an OS-inspired interface, not a kernel."}, {"q": "How private is the webcam feed?", "a": "The raw webcam frames never leave the browser. MediaPipe hand tracking runs locally in the tab. The only external request is a JSON payload containing landmarks, window metadata, and optional text transcript, which is sent to the configured LLM proxy."}, {"q": "Can I use HELIOS without the AI features?", "a": "Yes. The gesture-driven window manager is independent from the LLM integration. If you do not configure an API key, the shell simply skips AI actions and works as a spatial desktop interface."}]} />
+
+## Conclusion
+
+HELIOS was an attempt to prove that the future of spatial computing does not require a headset. It requires a camera, a browser, and an interaction model that respects the difference between a hand and a mouse. I learned more about input latency and interaction design than I did about AI. That was the surprise: the LLM side was straightforward, but making a pinch feel like a physical grip took weeks of tuning.
+
+The architecture that survives is the one that separates concerns: hand tracking as a bus, gestures as a finite-state machine, windows as Three.js planes, and AI as an asynchronous advisor. Each layer is independent, and that independence is what makes the whole system robust. When the AI fails, gestures still work. When the camera fails, the mouse still works. That is not a failure of vision; it is the opposite. It is a vision that can ship.
+
+The browser is not a toy runtime. It is the most portable, most permissive, and most resilient platform we have. If you want to see what a browser-native AI shell feels like, the code is open. Clone it, plug in a webcam, and pinch your way through a desktop that no longer needs a mouse.
+
+[View the project on GitHub](https://github.com/3ni8ma/HELIOS)

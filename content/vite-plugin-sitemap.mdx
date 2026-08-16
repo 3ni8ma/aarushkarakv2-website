@@ -1,0 +1,53 @@
+export const title = "Sitemaps Are Free SEO — Here's the Vite Plugin That Generates Yours"
+export const date = "August 16, 2026"
+export const tags = ["Vite", "SEO", "JavaScript", "Tooling"]
+export const repo = "https://github.com/3ni8ma/vite-plugin"
+export const difficulty = "Beginner"
+export const generated = "v2"
+
+import { Callout, CodeBlock, Faq, KeyTakeaways, Quiz } from "@/components/mdx"
+
+## The Problem
+
+Every static site I've shipped has gone through the same ritual: build the site, then manually write a sitemap.xml, forget to update it when a route changes, and discover a month later that Google indexed half my pages. Sitemaps are boring, so they get done wrong.
+
+## The Solution
+
+[@3ni8ma/vite-plugin-sitemap](https://github.com/3ni8ma/vite-plugin) generates `sitemap.xml` (and `robots.txt`, if you want it) as part of your Vite build. You declare your routes once, and every build emits a fresh, correct sitemap.
+
+```ts
+// vite.config.ts
+import { defineConfig } from 'vite'
+import sitemap from '@3ni8ma/vite-plugin-sitemap'
+
+export default defineConfig({
+  plugins: [
+    sitemap({
+      hostname: 'https://example.com',
+      routes: ['/', '/about', '/projects', '/contact'],
+      changefreq: 'monthly',
+      priority: 0.7,
+    }),
+  ],
+})
+```
+
+That's it. `vite build` now writes a sitemap into `dist/` automatically.
+
+## Options Worth Knowing
+
+| Option | Default | What it does |
+|--------|---------|--------------|
+| `changefreq` | `monthly` | Change frequency per URL |
+| `priority` | `0.7` | Crawl priority (0.0–1.0) |
+| `lastmod` | now | Last-modified date |
+| `robotsTxt` | `true` | Also generate `robots.txt` |
+| `disallow` | `[]` | Paths to disallow in robots.txt |
+
+The `disallow` option is the sleeper feature — point it at your admin routes and staging paths, and your robots.txt stays honest.
+
+## Why Bother
+
+Sitemaps are the difference between search engines discovering your site in days versus weeks. For a static site, it's one dependency and ten lines of config. The plugin is on [npm](https://www.npmjs.com/package/@3ni8ma/vite-plugin-sitemap), takes zero runtime dependencies, and runs entirely at build time.
+
+If you ship static sites with Vite, this is five minutes that pays for itself in crawl coverage.

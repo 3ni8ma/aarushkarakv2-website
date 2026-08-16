@@ -1,0 +1,55 @@
+export const title = "Glassmorphism Is Back — and This Tailwind Plugin Makes It Painless"
+export const date = "August 16, 2026"
+export const tags = ["Tailwind", "CSS", "Design", "Plugin"]
+export const repo = "https://github.com/3ni8ma/tailwind-plugin"
+export const difficulty = "Beginner"
+export const generated = "v2"
+
+import { Callout, CodeBlock, Faq, KeyTakeaways, Quiz } from "@/components/mdx"
+
+## The Problem
+
+Frosted-glass UI is everywhere again — every dashboard, every AI chat sidebar, every "spatial" web app. But hand-rolling the effect means repeating the same four-line blur recipe in every component:
+
+```css
+background: rgba(255, 255, 255, 0.08);
+backdrop-filter: blur(12px);
+border: 1px solid rgba(255, 255, 255, 0.12);
+border-radius: 12px;
+```
+
+And the moment a design system has three glass variants, those four lines mutate into a maintenance problem.
+
+## The Solution
+
+[@3ni8ma/tailwind-plugin](https://github.com/3ni8ma/tailwind-plugin) turns the glass recipe into design tokens you can apply anywhere:
+
+```html
+<div class="glass-sm">Subtle frosted panel</div>
+<div class="glass-md">Standard glass card</div>
+<div class="glass-lg">Heavy blur, strong border</div>
+```
+
+Add the plugin to your Tailwind config:
+
+```js
+// tailwind.config.js
+module.exports = {
+  plugins: [require('@3ni8ma/tailwind-plugin')],
+}
+```
+
+Every `glass-*` utility is backed by CSS variables, so you can retheme the entire glass layer from one place — blur radius, border opacity, tint, everything.
+
+## What's Inside
+
+- **glass-sm / glass-md / glass-lg** — three depth levels of the frosted effect
+- **CSS-variable driven** — retheme globally, not per-component
+- **Dark-mode friendly** — tints and borders adjust with your palette
+- **Zero runtime** — compiles down to plain utilities at build time
+
+## Why It's Worth It
+
+Consistency. The whole point of a design system is that "glass" means one thing everywhere. This plugin makes the glass recipe a named concept instead of a copy-paste ritual — and when the design changes, you change the tokens, not fifty components.
+
+If your project leans into frosted surfaces, it's on [npm](https://www.npmjs.com/package/@3ni8ma/tailwind-plugin) and takes one line to install.

@@ -99,6 +99,7 @@ const skillCategories = [
 ];
 
 const certifications = [
+  { name: "Introduction to Modern AI", issuer: "Cisco Networking Academy", date: "August 2026", href: "/certificates/introduction-to-modern-ai.pdf" },
   { name: "AI Security & Governance", issuer: "Securiti AI", date: "July 2026", href: "/certificates/ai-security-governance.pdf" },
   { name: "Artificial Intelligence Fundamentals", issuer: "IBM", date: "June 2026", href: "/certificates/ai-fundamentals.pdf" },
   { name: "Introduction to Generative AI", issuer: "Google", date: "June 2026", href: "/certificates/intro-to-gen-ai-badge.png" },

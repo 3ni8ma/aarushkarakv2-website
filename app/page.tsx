@@ -121,10 +121,11 @@ export default function Home() {
             </GlowButton>
             <GlowButton
               href="/resume.pdf"
-              download
+              target="_blank"
+              rel="noopener noreferrer"
               className="px-8 py-3 text-sm font-bold text-white hover:text-cyan transition-all"
             >
-              Download Resume
+              View Resume
             </GlowButton>
           </div>
         </div>

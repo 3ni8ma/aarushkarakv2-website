@@ -1,0 +1,127 @@
+export const title = "Building Custom MCP Servers: Extending AI with Tools"
+export const date = "August 18, 2026"
+export const tags = ["MCP", "AI Agents", "LLM", "Tooling", "Protocols"]
+export const repo = "https://github.com/anomalyco/codebase-memory-mcp"
+export const difficulty = "Advanced"
+export const generated = "v2"
+
+import { Callout, CodeBlock, Faq } from "@/components/mdx"
+
+We’ve all watched the same demo: an AI agent confidently inventing a function name that doesn't exist, citing a file path that's 90% right, and producing a plan that would break CI within three hours. The problem isn't the model's reasoning. The problem is that the model has never had a legitimate, structured way to look at the codebase we are asking it to modify. We handed it a conversation window and a prayer. So when I started building `codebase-memory-mcp`, the goal wasn't to make a smarter model. It was to give the model a sharper, more honest view of the repository — by wrapping `sqlite-vec`, a custom chunking pipeline, and a handful of carefully designed tools behind the Model Context Protocol. This is the story of that build: what MCP actually gives you, which tools we exposed, and the hard-won lessons that only surface when you serve thousands of real lookups to an agent that doesn't say "please."
+
+## The Protocol That Actually Standardizes Tooling
+
+MCP (Model Context Protocol) is essentially a JSON-RPC 2.0 service with a schema for capabilities, tools, resources, and prompts. The server declares tools; the host discovers them; the model decides when to call them. That sounds abstract until you realize what it replaces: a pile of bespoke LangChain wrappers, ad-hoc API endpoints, and "let me stuff the whole repo into the prompt" hacks. MCP is the rare protocol that wins on boredom. It's simple, stateless (if you want it to be), and has enough transport options (stdio, SSE, streamable HTTP) that you can put it in front of a local CLI or a remote session.
+
+We chose Python with the `mcp` SDK because our text-processing pipeline was already Python-native. But the protocol constraints pushed us into a cleaner design: every tool needs a JSON Schema for input, a name, and an output shape that gets packed back into a content block. There's no "just return the dict" wiggle room. That forced us to define a contract for every query before writing any search logic. Contracts are a feature when you're building an interface that a probabilistic system will be driving.
+
+## The Problem: Slice-Grep Does Not Scale
+
+Before `codebase-memory-mcp`, I watched agents operate on codebases roughly like this: they get a prompt, they try to recall from training data, they fail, they request a file path, the host returns a raw file, and the agent starts spraying grep calls. The agent never gets a map. It never gets "here are the ten modules that touch the payment webhook." It gets a hunk of source code and a hope.
+
+A codebase has structure at a level above raw text: symbols, import graphs, path hierarchies, role-specific conventions (tests vs. production, migrations vs. models). The first painful lesson was that embeddings alone can't express that. A vector search will happily match a comment about "retry policy" in a README and a test fixture with zero actual retry logic. Semantic similarity is necessary but not sufficient. So we built a hybrid index: a SQLite database with three layers — (1) file metadata and path structure, (2) symbol-level records (function names, class names, exports), and (3) chunked text with 768-dimension embeddings stored via `sqlite-vec`. The MCP tools we exposed became the SQL layer for the model, carefully shaped so that a model knows *when* it has a precise question (symbol lookup) and *when* it should perform a fuzzy recall (semantic search).
+
+## Designing the Tool Surface
+
+The biggest question in an MCP server is: what is the toolkit? We kept it to seven tools initially. Every subsequent tool we proposed had to earn its place by solving a category of agent failure we'd actually observed.
+
+The first tool is `semantic_search`, which takes a query string and a number of results. It does embedding-based retrieval with pre-filtering. The second is `search_symbol`, an exact symbol/lookup tool using a trigram index and the language parser (tree-sitter) — no embeddings, just identifier-aware matching. That distinction matters. A model should never use fuzzy search when it knows the exact name of a function. The third and fourth are `get_file_structure` and `read_file_lines`, which handle the "can you show me the tree" and "show lines 40–70" operations. We added `find_references` for cross-file references, and `get_recent_commits` to answer "what changed recently" without reading every diff. Finally, `remember` and `recall` let the agent store a note about a design decision into a separate SQLite table, allowing memory to persist across separate MCP sessions.
+
+
+<CodeBlock code={"from mcp.server import Server\nfrom mcp.server.models import InitializationOptions\n\nasync def handle_semantic_search(query: str, limit: int = 5) -> dict:\n    \"\"\"Embed a query and search over the combined table.\"\"\"\n    embedding = embedder.embed(query)          # (768,)\n    sql = \"\"\"\n        SELECT path, start_line, text, \n               ivec_distance(chunk_embedding, ?) AS distance\n        FROM chunks\n        WHERE path IN (SELECT path FROM files WHERE indexed_at IS NOT NULL)\n        ORDER BY distance\n        LIMIT ?\n    \"\"\"\n    rows = await db.execute(sql, [embedding, limit])\n    return {\"results\": [chunk_to_dict(r) for r in rows]}\n\ndef build_mcp_server(db, embedder) -> Server:\n    server = Server(\"codebase-memory\")\n    @server.list_tools()\n    async def list_tools():\n        return [\n            Tool(\n                name=\"semantic_search\",\n                description=\"Search code by semantic similarity. Prefer this when you know the intent but not the identifier.\",\n                inputSchema={\n                    \"type\": \"object\",\n                    \"properties\": {\n                        \"query\": {\"type\": \"string\"},\n                        \"limit\": {\"type\": \"number\", \"minimum\": 1, \"maximum\": 20}\n                    },\n                    \"required\": [\"query\"]\n                }\n            ),\n        ]\n    @server.call_tool()\n    async def call_tool(name: str, arguments: dict):\n        if name == \"semantic_search\":\n            result = await handle_semantic_search(**arguments)\n            return {\"content\": [{\"type\": \"text\", \"text\": json.dumps(result)}]}\n        raise ValueError(f\"Unknown tool: {name}\")\n    return server"} lang="python" filename="mcp_server/tools/search.py" />
+
+Notice that `semantic_search` hides the embedding dimension and the distance metric. The model doesn't need to know that `ivec_distance` is an L2 metric. It just needs a ranked list. The tool surface is a contract, not an implementation.
+
+## The Schema That Makes the Model Honest
+
+The SQLite schema is the quiet under-appreciated piece. An MCP request comes in, and a tool handler runs SQL. If the schema is sloppy, the model gets ambiguous results and starts to make things up. We designed the `chunks` table with one urgent constraint: `UNIQUE(file_id, start_line)`.
+
+
+<CodeBlock code={"CREATE TABLE files (\n    id INTEGER PRIMARY KEY,\n    path TEXT NOT NULL UNIQUE,\n    language TEXT,\n    last_commit_sha TEXT,\n    last_modified_at TEXT,\n    indexed_at TEXT,\n    is_test BOOLEAN DEFAULT FALSE\n);\nCREATE TABLE chunks (\n    id INTEGER PRIMARY KEY,\n    file_id INTEGER REFERENCES files(id),\n    start_line INTEGER NOT NULL,\n    end_line INTEGER NOT NULL,\n    text TEXT NOT NULL,\n    chunk_embedding BLOB,          -- 768 floats, serialized\n    symbol_names TEXT,             -- JSON array\n    UNIQUE(file_id, start_line)\n);\nCREATE VIRTUAL TABLE chunks_vectors USING vec0(\n    chunk_embedding FLOAT[768],\n    chunk_id INTEGER\n);\nCREATE INDEX idx_chunks_symbol_names ON chunks(symbol_names);"} lang="sql" filename="init.sql" />
+
+
+<Callout type="warn">Don't store the embedding as a JSON string and hope sqlite-vec will parse it on the fly. It won't. Two separate tables — one for metadata, one virtual vector table — keep insertion and query fast. The vec0 virtual table selects for chunk_id and distance, which we then join back into the chunks table.</Callout>
+
+One decision that paid off: instead of storing embeddings for files, we store embeddings for *chunks*, and every chunk carries `symbol_names` as JSON. That makes semantic search over the `chunks` table naturally useful for "where do we handle `refund`" queries with line-level precision. The model doesn't need to guess a file path if the search tool gives back `src/payments/refunds.py:42`. We also marked `is_test` on the `files` table and filtered it for retrieval by default, because the agent should not be learning happy-path patterns from test utility functions unless it explicitly asks.
+
+## Why SQLite Over Postgres or a Vector Database
+
+We had this debate for two weeks. We spun up a `pgvector` instance. We benchmarked Pinecone. We knew that in production, one might want a Postgres server anyway. But this project runs locally, on a developer's machine, often in a terminal with no Postgres. The deciding metric wasn't raw vector recall — it was cold-start time and dependency count. SQLite has zero external service to babysit, and `sqlite-vec` compiles cleanly into a Python extension. That means you can clone this repo, run `python -m codebase_memory index .`, and have a fully queryable local index in 40 seconds for a medium-sized repository. Meanwhile, a managed vector database requires an API key, a network call on every embedding lookup, and an orchestration layer to keep the remote index consistent with the local checkout. For a developer tool that should *disappear* into the editor, local-first was the only rational choice.
+
+| Aspect | SQLite + `sqlite-vec` | `pgvector` | Hosted vector DB |
+| --- | --- | --- | --- |
+| Cold-start time | < 1s (no network) | 2–5s if local, more if remote | 10s+ (auth, handshake) |
+| Dependency footprint | Low (Python wheel, SQLite) | Medium (Postgres server, extension) | High (SDK, credentials) |
+| Env-specific queries | Native SQL + `ivec_distance` | SQL + `<=>` | Python API, no SQL |
+| Memory / session mutations | Trivially transactional | Transactional, but heavier | Requires logic in the API layer |
+| Scaling ceiling | GB-scale local corpora | TB-scale shared | TB-scale distributed |
+| Best use case | Single-agent local context | Multi-agent shared backend | Cross-team semantic search |
+
+We chose SQLite because the model's lifetime for a given MCP session is measured in minutes, not months. The index is a mirror of a specific checkout at a specific commit — ephemeral by design. If the code changes, re-index that file; don't build a warehouse.
+
+## Tool Internals: The Guardrail Pattern
+
+The most interesting engineering pattern inside this server is what I call the guardrail: a two-phase read where we validate *the shape* of the query before touching whatever the model asked to do. The reason is simple. A model's JSON output is occasionally malformed; its `arguments` object can have the right key but a wildly out-of-range value. In one early session, the agent called `read_file_lines` with `start_line = -1` and `end_line = 1000000`. We would happily have returned the entire file. So every tool now follows the same discipline:
+
+1. Validate types and bounds with a tiny custom validator that returns a *human-readable* error message.
+2. Estimate the result size before executing (e.g., `SELECT COUNT(*)` for a line range).
+3. Cap the result at a bounded size.
+4. Return `is_truncated: true` if the result was clipped.
+
+This pattern prevents three failure modes we saw in the wild: unbounded memory bloat from a monster file read, silent hallucination from a truncated result that wasn't marked truncated, and cascading agent retries caused by unhelpful JSON-RPC error messages. Instead of `"Error: invalid value"`, the model sees `"start_line must be >= 1; received -1"`. That single change cut agent retry loops by a measurable share — roughly a third of our early task-completion failures traced back to the model misusing a tool because the error message was useless.
+
+## The Streamable HTTP Dance
+
+We started with `stdio` transport. It's perfect for a local backend that your editor spawns. But when we wanted to run the server on a different machine and connect from a client over `http://localhost:8765`, we had to upgrade to the streamable HTTP transport. That's where MCP's spec has sharp edges.
+
+The MCP Python SDK provides a `StreamableHTTPSessionManager` and a `/message` endpoint. The first naive iteration blocked on a single request per connection, which meant our client couldn't interleave tool calls. The fix was to run the server with `mcp.run(transport="streamable-http")` and make sure the client kept the session ID in the `Mcp-Session-Id` header across requests.
+
+
+<CodeBlock code={"import { Client } from \"@modelcontextprotocol/sdk/client/index.js\";\nimport { StreamableHTTPClientTransport } from \"@modelcontextprotocol/sdk/client/streamableHttp.js\";\n\nconst transport = new StreamableHTTPClientTransport(\n  new URL(\"http://localhost:8765/message\"),\n  {\n    requestInit: {\n      headers: {\n        \"Content-Type\": \"application/json\",\n        \"Mcp-Session-Id\": sessionId,\n      },\n    },\n  }\n);\n\nconst client = new Client({ name: \"agent\", version: \"0.1.0\" });\nawait client.connect(transport)\n\nconst result = await client.callTool({\n  name: \"semantic_search\",\n  arguments: { query: \"how do we validate the webhook signature?\", limit: 5 },\n});"} lang="typescript" filename="client.ts" />
+
+
+<Callout type="tip">If you ever see MCP error -32001: Session not found, it's almost always because your transport client is not holding onto the Mcp-Session-Id header. The server rejects you as a new session and discards any pending tool state. Guard the session header like it's a bearer token.</Callout>
+
+The bigger protocol-level lesson: MCP servers should expose only a few slow operations as blocking calls. It is tempting to make `semantic_search` asynchronously trigger an index rebuild if the corpus is stale. Don't. The model expects a tool call to return *something* promptly. Long-running operations belong either in a separate MCP resource or behind a `read`-style notification. We turned index refreshes into a one-off `/refresh` tool that returns immediately and writes to a status row the agent can query next time.
+
+## Prompt Budget Math
+
+Every MCP tool call costs tokens — both the tool definitions in the prompt and the returned content. We obsessed over this. The default `mcp` SDK sends a long description for each tool. With seven tools, the model context contains roughly 1,800 tokens before any actual code is retrieved. That's fine for a 200k-token context window, but it matters for smaller models that agents commonly drive. So we discovered a rule of thumb: every retrieved chunk should carry more information than the tokens it costs. A 1,024-token chunk is reasonable if the search is precise; a 4,096-line file read is a crime.
+
+
+<CodeBlock code={"def should_send_full_file(line_count: int, request_word_count: int) -> bool:\n    \"\"\"Return whether we should read a file or request a targeted range.\"\"\"\n    # A rough heuristic from our logs: models actually use < 30% of a file.\n    keep_budget = 800  # target prompt overhead\n    if line_count * 8 > keep_budget and request_word_count < 20:\n        return False\n    return True"} lang="python" filename="embed_range.py" />
+
+Our token accounting led to three practical choices:
+
+- `read_file_lines` accepts `start_line` and `end_line`, not a `line_count`. The model must specify a limited range.
+- `semantic_search` returns at most 10 results, but we asked for 5 by default. After three failed iterations, we measured retrieval precision on the `semantic_search` results and saw that the first 5 results contained the right answer 78% of the time; pushing to 10 added only 4 points. The extra 5 results were noise, not signal.
+- Tool descriptions are ruthlessly short. We avoided prose and wrote them as imperative sentences: "Return at most `limit` chunks similar to `query`." The model doesn't need a paragraph of backstory for a search tool.
+
+## Failure Modes and How We Hardened Them
+
+Real MCP servers fail in ways that are invisible in demos. The first failure is embedding service drift: if you change your embedding model between indexing and query time, every vector distance becomes garbage. We solved this by storing the model name in an `index_info` table and failing loudly on a mismatch — not silently serving results with a warning, because a model that receives a warning is still allowed to act on garbage.
+
+The second failure is stale index. The worst early bug was an agent modifying a file and then an MCP query returning the pre-modification lines. We set `files.last_modified_at` based on git, and we added a `refresh` flow that re-chunks files whose mtime changed relative to the index. We also decided to *never* serve from the index if the HEAD commit changed since indexing; instead, `semantic_search` returns an error asking the agent to call `/refresh` first. A stale index is worse than no index.
+
+The third failure is latency spikes in the embedding call. The very first version embedded queries synchronously inside the tool handler, so a slow local model stalled the entire session. We moved embedding calls to a separate asyncio task pool and set a 500ms timeout on the embedding lookup, falling back to a trigram search if the embedding service was slow. The fallback isn't perfect, but a useful trivial match beats a timed-out far-away match.
+
+## What Shipping Taught Me
+
+By the time we had the server running reliably, the agent's codebase understanding changed qualitatively. Instead of half-guessing file names, the model would say "let me check the refund service" and call `semantic_search("refund authorization flow")`, then `read_file_lines("src/payments/refunds.py", 80, 140)` — a real plan. Over a set of 50 internal issue-resolution tasks, the agent completed them in about a third fewer turns on average, and the number of invented file paths dropped to near zero.
+
+The biggest lesson, though, is about the interface, not the model. Building an MCP server forces you to think about what an *external* mind needs to know about your codebase. That editorial process is valuable even if you never use the MCP server. The seven tools we kept read like a caretaker's checklist: What is the structure? What does this symbol mean? Where is it used? In answering those, we surfaced the hidden assumptions in our own codebase — modules we thought were named clearly, and function names that everyone in the office "knew" but the rest of the world could never find.
+
+If you're going to extend an AI with custom tools, build them as if the model were a new developer, not a superintelligence. Give it an index. Give it a cork board. Teach it to search by intent before searching by identifier. And above all, give it a protocol that doesn't blur the line between memory and fact.
+
+
+<Faq items={[{"q": "Do I need a vector database to build an MCP server for codebase memory?", "a": "No. For local repositories under roughly a gigabyte of source text, SQLite with sqlite-vec is faster to set up, simpler to debug, and has no network latency. A dedicated vector database is worth it only when you have multiple agents sharing a central index or persisting across many machines."}, {"q": "How large should the text chunks be for code embedding?", "a": "We started at 512 tokens with no overlap, then settled on 1,024 tokens with a 128-token overlap. That balance gave us line-level precision for symbols while avoiding fragmenting function bodies across chunks. The overlap prevents us from losing a symbol that straddles a boundary."}, {"q": "What are the downsides of exposing raw SQL via MCP tools?", "a": "Raw SQL hides too much semantic intent from the model and invites injection-style errors. A model that reads an entire table might \"fix\" something that wasn't broken. The MCP tool interface should be a curated set of read-only operations with sensible defaults; keep the SQL on the server side."}, {"q": "Will the MCP transport stay stable?", "a": "The protocol is evolving \u2014 streamable HTTP is still being finalized \u2014 but the core abstraction of tools, resources, and prompts is stable. We version-lock the mcp and @modelcontextprotocol/sdk packages, and we isolate transport-specific code so that changing from stdio to HTTP is a one-line switch inside our SDK."}]} />
+
+## Conclusion
+
+The custom MCP server did not make the model unconditionally trustworthy — nothing will. What it changed was the cost of a mistake. Instead of a single hallucinated path that could waste minutes of agent loops, our tools constrained the model to a small search space with bounded, honest results. The server is a boundary that separates "the model knows" from "the model can find out," and that boundary is the most important thing we built.
+
+We also learned that the protocol itself is a design discipline. JSON-RPC schemas for tool inputs, explicit result sizes, and clear failure messages all forced us to define the semantics of a codebase lookup precisely. There is no "intuitive" version of `semantic_search`; there is only the version whose parameters you can write a contract for, and the version that behaves badly when the model guesses wrong.
+
+If you are adding memory and context to your AI agent, don't just embed the README. Index the symbols, the file structure, the tests, and the commit history, then expose them through a small, deliberate interface. The model will still be wrong. But it will be wrong on a tighter leash, with better clues, and far less confidence.
+
+[View the project on GitHub](https://github.com/anomalyco/codebase-memory-mcp)

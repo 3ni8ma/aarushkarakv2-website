@@ -58,6 +58,7 @@ export const metadata: Metadata = {
 const personJsonLd = {
   "@context": "https://schema.org",
   "@type": "Person",
+  "@id": `${siteConfig.url}/#person`,
   name: siteConfig.name,
   url: siteConfig.url,
   image: `${siteConfig.url}/images/profile.jpg`,
@@ -70,6 +71,11 @@ const personJsonLd = {
     addressRegion: "ON",
     addressCountry: "CA",
   },
+  alumniOf: {
+    "@type": "EducationalOrganization",
+    name: "John Fraser Secondary School",
+  },
+  award: "1st Place TSA State Champion (Video Game 3D Design)",
   worksFor: {
     "@type": "Organization",
     name: "TheCoderBros",

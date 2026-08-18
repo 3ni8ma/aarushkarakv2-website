@@ -66,12 +66,12 @@ const experiences = [
   },
   {
     role: "Web Developer & Freelancer",
-    org: "Fiverr",
+    org: "Freelance Insider",
     period: "April 2025 - Present",
     description:
       "Delivered over $5,000 in high-value client projects specializing in 3D web environments, AI apps, and financial tools.",
-    href: "https://www.fiverr.com",
-    logo: "/images/logos/fiverr.svg",
+    href: "https://www.freelanceinsider.net",
+    logo: "/images/logos/freelance-insider.png",
   },
   {
     role: "Parliamentarian",

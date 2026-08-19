@@ -104,7 +104,7 @@ const certifications = [
   { name: "Artificial Intelligence Fundamentals", issuer: "IBM", date: "June 2026", href: "/certificates/ai-fundamentals.pdf" },
   { name: "Introduction to Generative AI", issuer: "Google", date: "June 2026", href: "/certificates/intro-to-gen-ai-badge.png" },
   { name: "Career Essentials in GitHub", issuer: "GitHub", date: "June 2026", href: "/certificates/github-professional-certificate.pdf" },
-  { name: "Build Your Own Chatbot", issuer: "", date: "", href: "/certificates/build-your-own-chatbot.pdf" },
+  { name: "Build Your Own Chatbot", issuer: "IBM", date: "June 2026", href: "/certificates/build-your-own-chatbot.pdf" },
   { name: "AI Fluency: Framework & Foundations", issuer: "Anthropic", date: "2026", href: "/certificates/ai-fluency-framework-foundations.pdf" },
   { name: "Claude Code in Action", issuer: "Anthropic", date: "2026", href: "/certificates/claude-code-in-action.pdf" },
   { name: "Intro to Machine Learning", issuer: "Kaggle", date: "April 2026", href: "/certificates/intro-to-machine-learning.png" },

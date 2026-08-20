@@ -163,7 +163,7 @@ export default async function BlogPostPage(props: PageProps<"/blog/[slug]">) {
 
         <div className="grid gap-10 xl:grid-cols-[minmax(0,1fr)_240px]">
           <div className="min-w-0">
-            <GlassCard className="p-8 md:p-12 mb-8">
+            <GlassCard className="glass-card-static p-8 md:p-12 mb-8">
               <div className="flex flex-wrap items-center gap-3 text-xs font-bold uppercase tracking-wider">
                 <span className="text-cyan/80">{meta.date}</span>
                 <span className="text-white/25">&middot;</span>
@@ -229,7 +229,7 @@ export default async function BlogPostPage(props: PageProps<"/blog/[slug]">) {
               </div>
             </GlassCard>
 
-            <GlassCard className="p-8 md:p-12 prose-container">
+            <GlassCard className="glass-card-static p-8 md:p-12 prose-container">
               <div id="post-body">
                 <Content />
               </div>

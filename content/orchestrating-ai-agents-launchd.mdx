@@ -1,0 +1,151 @@
+export const title = "Orchestrating 24/7 AI Agents on a Mac"
+export const date = "August 20, 2026"
+export const tags = ["Automation", "launchd", "AI Agents", "Orchestration", "macOS"]
+export const repo = "https://github.com/3ni8ma/aion"
+export const difficulty = "Advanced"
+export const generated = "v2"
+
+import { Callout, CodeBlock, KeyTakeaways, Quiz } from "@/components/mdx"
+
+At 2:47 AM on a Thursday, the agent I trusted to watch a price feed stopped answering. It hadn't crashed. It hadn't logged an error. The process was alive, the network socket was open, and the LLM loop had simply deadlocked on a malformed tool result. Nobody noticed until the morning dashboard looked wrong.
+
+That is the actual failure mode of "autonomous" agents on a laptop: they don't crash, they quietly rot. Cloud VMs have orchestrators, health checks, and site reliability engineers watching them. Your Mac has you, asleep. I built [aion](https://github.com/3ni8ma/aion) because I wanted 24/7 agents with the same discipline as a production service, but running on hardware I own, with no container overhead and no per-minute cloud bill. This is the engineering behind that system: launchd as the process supervisor, SQLite as the durable queue, and a handful of hard-won rules that keep LLM loops from eating your API budget while they spin.
+
+## Why launchd is the only serious process manager on macOS
+
+The first mistake is reaching for cron. Cron is a timer, not a process manager. If a cron job crashes at 3 AM, nothing restarts it. If it runs for 14 hours past its schedule, cron does not care. And cron's environment is a stripped-down shell with no PATH, no `launchctl` session access, and no sane way to get secrets.
+
+Docker Desktop on macOS is a VM inside your laptop. It handles restarts well, but it costs 2–4 GB of RAM just to idle, and it inserts a virtualization layer between an agent and the host filesystem. For a lightweight program that makes HTTP calls and writes JSON, that is a waste of the exact resource — memory — that agents consume fastest.
+
+I compared the options before committing:
+
+| Runner | Restart policy | Logging | Idle RAM cost | Fits an LLM agent loop? |
+|---|---|---|---|---|
+| cron | None | None built-in | 0 | No: no supervision |
+| nohup + manual | None | Redirect to file | 0 | No: dies with your session |
+| launchd | KeepAlive, throttled, event-driven | StandardOut/Err paths, newsyslog integration | ~0 | Yes, and it is native |
+| Docker Desktop | Full container restart | Full | 2–4 GB | Overkill on a laptop |
+
+launchd runs as PID 1 on macOS. It supervises every daemon on the system, it survives logout, it can restart processes with exponential backoff built into `ThrottleInterval`, and it costs nothing until a process starts. The only real question was how to make an agent loop that fits launchd's model — a model where a job either runs or exits with a status code.
+
+## The agent loop that never returns
+
+An agent in aion is a `while True` loop. That is not laziness; it is a deliberate contract with launchd. launchd's `KeepAlive` handles crashes. The agent itself handles idleness. If there is no work, the loop sleeps on the queue. If there is work, it claims a row, calls the LLM, executes tool calls, writes results, and loops. A job that "finishes" and exits is, by design, a failure.
+
+
+<CodeBlock code={"import json\nimport os\nimport time\n\nAPI_KEY = os.environ[\"AION_LLM_KEY\"]\nMAX_BACKOFF = 300  # seconds\n\ndef claim_next_task() -> dict | None:\n    # Single-writer claim; see the queue section below.\n    ...\n\ndef run_cycle() -> None:\n    task = claim_next_task()\n    if task is None:\n        time.sleep(2)\n        return\n    try:\n        response = call_llm(task[\"payload\"], tools=TOOLS, api_key=API_KEY)\n        for call in response[\"tool_calls\"]:\n            execute_tool(call)\n        mark_done(task[\"id\"], response)\n    except RateLimitError:\n        requeue(task[\"id\"], delay=min(2 ** task[\"attempts\"], MAX_BACKOFF))\n    except ToolValidationError:\n        requeue(task[\"id\"], delay=1)  # bad payload, not a crash\n\nif __name__ == \"__main__\":\n    while True:\n        run_cycle()"} lang="python" filename="agent_loop.py" />
+
+The subtle part is the rate-limit path. When an LLM API returns 429, the agent does not die — that would trigger launchd's restart logic and burn another request immediately. Instead, the agent catches it, compute the exponential delay itself, and requeues the task with `next_run_at` in the future. The process stays alive, the queue holds the work, and the API key cools down.
+
+## The launchd plist that survives reboots
+
+The entire orchestration story hinges on one XML file in `~/Library/LaunchAgents/`. Everything else in aion is glue around it.
+
+
+<CodeBlock code={"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n    <key>Label</key>\n    <string>com.aion.worker</string>\n\n    <key>ProgramArguments</key>\n    <array>\n        <string>/opt/homebrew/bin/python3</string>\n        <string>/Users/me/aion/agent_loop.py</string>\n    </array>\n\n    <key>WorkingDirectory</key>\n    <string>/Users/me/aion</string>\n\n    <!-- Start once even if it exited cleanly before -->\n    <key>RunAtLoad</key>\n    <true/>\n\n    <key>KeepAlive</key>\n    <dict>\n        <!-- Restart only on crashes: keep alive while the job is running,\n             and relaunch when it exits with a non-zero status. -->\n        <key>SuccessfulExit</key>\n        <false/>\n    </dict>\n\n    <!-- Minimum seconds between automatic relaunches. Default is 10;\n         raising it prevents a hot crash loop from hammering the LLM API. -->\n    <key>ThrottleInterval</key>\n    <integer>30</integer>\n\n    <key>StandardOutPath</key>\n    <string>/Users/me/Library/Logs/aion/worker.log</string>\n    <key>StandardErrorPath</key>\n    <string>/Users/me/Library/Logs/aion/worker.err</string>\n\n    <key>EnvironmentVariables</key>\n    <dict>\n        <key>PYTHONUNBUFFERED</key>\n        <string>1</string>\n    </dict>\n\n    <key>ProcessType</key>\n    <string>Background</string>\n</dict>\n</plist>"} lang="bash" filename="com.aion.worker.plist" />
+
+Load it with `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.aion.worker.plist`. Unload with `bootout`.
+
+
+<Callout type="tip">ThrottleInterval is the minimum time launchd waits before relaunching a crashed job. Set it to at least 30 seconds. The default of 10 is enough for a fast crash loop to burn real money against a paid LLM API before you wake up.</Callout>
+
+The `KeepAlive` dict with `SuccessfulExit = false` is the key decision: if the agent exits with code 0, launchd leaves it dead. That gives you an escape hatch — if you need to stop an agent permanently for maintenance, a graceful shutdown path that exits zero stops the restarts. Any nonzero exit, launchd treats as a crash and relaunches.
+
+## Crashes are cheap; crash loops are not
+
+Every crash costs at least one wasted LLM call when the loop restarts and re-fetches its context. A crash loop at 10-second intervals is not just noise; it is a credit-draining feedback loop. The fix is layered backoff, enforced in two places.
+
+First, inside the agent, as shown above: catch rate limits and requeue with `min(2 ** attempts, 300)` seconds. Second, in the watchdog (next sections), which kills agents that exceed their retry budget.
+
+
+<CodeBlock code={"def next_delay(attempt: int) -> int:\n    \"\"\"1, 2, 4, 8, ... capped at 5 minutes.\"\"\"\n    return min(2 ** attempt, 300)"} lang="python" filename="backoff.py" />
+
+I have watched a buggy tool result cause 40 API calls in 6 minutes because I trusted `KeepAlive` to solve availability. It solves availability, not cost. The backoff budget is the real guardrail.
+
+
+<Callout type="warn">An agent that crash-loops for an hour can outspend a month of normal operation. Cap attempts per task in the queue, and cap restarts per hour in the watchdog, before you ever deploy.</Callout>
+
+## The SQLite queue that keeps agents honest
+
+With multiple agents (price monitoring, email triage, research), you need a durable work queue. On a Mac, Postgres and Redis are operational overhead you do not want. SQLite is a file; it survives reboots, it is transactional, and macOS ships a perfectly modern version.
+
+The schema is deliberately small:
+
+
+<CodeBlock code={"CREATE TABLE tasks (\n  id INTEGER PRIMARY KEY AUTOINCREMENT,\n  agent TEXT NOT NULL,\n  payload TEXT NOT NULL,\n  status TEXT NOT NULL DEFAULT 'pending',      -- pending | running | done | dead\n  attempts INTEGER NOT NULL DEFAULT 0,\n  max_attempts INTEGER NOT NULL DEFAULT 5,\n  next_run_at INTEGER NOT NULL DEFAULT 0,       -- unixepoch; future = delayed\n  created_at INTEGER NOT NULL DEFAULT (unixepoch()),\n  updated_at INTEGER\n);\n\nCREATE INDEX idx_tasks_claim\n  ON tasks(status, next_run_at)\n  WHERE status = 'pending';\n\nPRAGMA journal_mode = WAL;\nPRAGMA busy_timeout = 5000;"} lang="sql" filename="queue.sql" />
+
+The claim operation is a single statement that atomically moves one pending row to running:
+
+
+<CodeBlock code={"UPDATE tasks\nSET status = 'running', updated_at = unixepoch()\nWHERE id = (\n  SELECT id FROM tasks\n  WHERE status = 'pending' AND next_run_at <= unixepoch()\n  ORDER BY created_at\n  LIMIT 1\n)\nRETURNING *;"} lang="sql" />
+
+Two rules kept this reliable. First, exactly one writer: only the main aion daemon writes to the queue; agents read through a tiny local API. No locking spaghetti. Second, WAL mode and `busy_timeout` mean a crashed agent holding a connection cannot block the daemon forever. If an agent dies mid-task, the daemon marks its `running` row as `pending` again with a delay — the crash is invisible to the rest of the fleet.
+
+## Memory: the silent agent killer
+
+LLM agents leak memory. Tool results pile up, context windows grow, and every retry embeds the previous failure into the next prompt. On a Linux box, OOM-killer events show up in `dmesg`. On macOS, the system just starts swapping, and the machine turns into a beach ball festival while your agent "works."
+
+I learned to treat RSS as the primary health metric, not CPU. The watchdog reads memory usage from `ps` — no psutil dependency needed, though it is nicer if you have it — and kills anything above a per-agent ceiling. launchd immediately restarts the agent, and the queue still holds its incomplete task.
+
+
+<CodeBlock code={"import os\nimport signal\nimport subprocess\nimport time\n\nMAX_RSS_MB = 4096  # agents have a 4 GB ceiling in aion\nHEARTBEAT_TTL_S = 180\n\ndef rss_mb(pid: int) -> int:\n    out = subprocess.check_output(\n        [\"ps\", \"-o\", \"rss=\", \"-p\", str(pid)]\n    )\n    return int(out)  # ps reports RSS in KB; convert below\n\ndef is_stale(agent_dir: str) -> bool:\n    hb = os.path.join(agent_dir, \"heartbeat\")\n    if not os.path.exists(hb):\n        return True\n    age = time.time() - os.path.getmtime(hb)\n    return age > HEARTBEAT_TTL_S\n\nwhile True:\n    for pidfile in os.listdir(\"/var/run/aion\"):\n        pid = int(open(f\"/var/run/aion/{pidfile}\").read().strip())\n        rss_kb = rss_mb(pid)\n        if rss_kb > MAX_RSS_MB * 1024:\n            os.kill(pid, signal.SIGKILL)\n            # launchd sees the nonzero exit and relaunches the job.\n        if is_stale(f\"/var/run/aion/{pidfile}\"):\n            os.kill(pid, signal.SIGKILL)\n    time.sleep(30)"} lang="python" filename="watchdog.py" />
+
+The key trick is coordinating with launchd rather than fighting it: the watchdog never tries to "restart" an agent. It only kills. launchd's `KeepAlive` is the restart mechanism, and because `ThrottleInterval` is set, a repeated leak-and-kill cycle gets slower over time instead of faster.
+
+## Logs: owning the aftermath at 3 AM
+
+Launchd writes `StandardOutPath` and `StandardErrorPath` as plain files with no rotation. A 24/7 agent writes megabytes of JSON per day; within a month, a worker log can consume gigabytes. The macOS-native answer is `newsyslog(8)`, the same tool that rotates system logs.
+
+Drop this into `/etc/newsyslog.d/aion.conf`:
+
+
+<CodeBlock code={"# logfile                   owner:group  mode  count  size  when  flags\n/Users/me/Library/Logs/aion/worker.log  me:staff  644  7  1000000  *  Z\n/Users/me/Library/Logs/aion/worker.err  me:staff  644  7  1000000  *  Z"} lang="bash" filename="/etc/newsyslog.d/aion.conf" />
+
+This keeps 7 rotated files, compresses old ones with gzip (`Z`), and triggers rotation at 1 MB. The configuration is checked by `newsyslog` on a timer, so there is nothing else to schedule.
+
+The deeper lesson: treat logs as data, not as prose. Every agent cycle should emit one JSON line with a correlation ID (`task_id`), the LLM model, token counts, and latency. When the price feed breaks at 3 AM, you want `grep 2025-06-12T02:47` to return five structured lines, not a wall of print statements. I lost two days to debugging a deadlock that only appeared in a 400 MB text file that had been truncated by the filesystem. Structured logs would have shown the stuck tool call immediately.
+
+## Secrets without plaintext env files
+
+The naive approach is `EnvironmentVariables` in the plist. Do not do it. Plist files are readable by any process running as your user, they leak into `launchctl` output, and they are one accidental `git add` away from being pushed to a public repo. (I did that. It was one character away from being in the commit history of a now-deleted repository.)
+
+The right place for secrets on macOS is the Keychain, via the `security` CLI. The agent reads its API key at startup, holds it in memory, and never writes it to disk:
+
+
+<CodeBlock code={"#!/bin/bash\nset -euo pipefail\n\n# Store once:\n#   security add-generic-password -U -a worker -s aion-api -w \"$LLM_KEY\"\nexport AION_LLM_KEY=$(\n  security find-generic-password -w -a worker -s aion-api\n)\nexec /opt/homebrew/bin/python3 /Users/me/aion/agent_loop.py"} lang="bash" filename="start.sh" />
+
+One tradeoff: Keychain access requires your login session to be unlocked. If you reboot and never log in, the keychain is locked and the agent cannot start. For a personal machine that is acceptable — you are logging in anyway. For a headless Mac mini used as a server, use the login keychain and disable auto-lock, or generate app-specific tokens with a shorter lifetime and rotate them monthly.
+
+## What aion v2 does differently
+
+The first version of aion had the watchdog and the agent in the same process. That was a mistake: when the watchdog crashed, everything died, and launchd restarted the whole thing — including the queue reader, which then double-claimed tasks. Splitting the supervisor (aion daemon) from the workers (launchd jobs) was the architectural fix that made the system boring. Boring is what you want at 3 AM. If I rebuilt it today, I would:
+
+- **Use one launchd job per agent**, not one job running many agents. A crash in one agent should never be able to take down the others in the same process group.
+- **Add `WatchPaths`** so configuration changes auto-reload workers, instead of a manual `bootout`/`bootstrap` dance.
+- **Model the heartbeat as a database row**, not a file mtime. Files get cleaned by macOS cleanup tools; the SQLite database is durable and queryable.
+- **Put the backoff calculator in the queue schema itself**, as a check constraint: `attempts <= max_attempts`. That makes the invariant impossible to violate by accident.
+
+The hardest-won lesson of this whole project: the orchestrator's job is to fail fast, restart clean, and make the crash log legible. Everything else — the prompts, the tool schemas, the model choice — is application code. The moment I stopped treating process management as "just a script that keeps things running" and started treating it as a small, distributed-systems problem with a state machine, the agents became genuinely unattended.
+
+## FAQ
+
+**Can this run on an Intel Mac?** Yes. launchd and SQLite behave the same; I deployed aion on a 2018 Intel Mac mini and the only difference was the memory ceiling (it needed 2 GB, not 4 GB).
+
+**Does the Mac need to be logged in?** The agents run in a user session, so yes — the session must be active. For a headless setup, consider a dedicated user account with automatic login and the login keychain unlocked.
+
+**What happens if the network drops?** The agent process stays alive and the LLM call raises a connection error, which we catch, requeue with backoff, and sleep. launchd never sees a crash.
+
+**Can I run cloud agents alongside aion?** Yes. I run aion for latency-sensitive tasks and a cloud worker for batch jobs; they share the same SQLite schema, and a small sync script pushes finished tasks upstream.
+
+## Conclusion
+
+Building a 24/7 AI agent farm on a Mac is less about the agents and more about the boring plumbing: a process supervisor that restarts things, a queue that survives crashes, a watchdog that kills leaks, and logs you can actually read after midnight. launchd does the heavy lifting; all I added is a loop, a heartbeat, and some discipline around backoff and secrets.
+
+The result is a system that runs for weeks without human intervention, costs nothing to idle, and — most importantly — fails loudly the moment something is actually wrong. That is the entire point of orchestration: not to make agents infallible, but to make their failures cheap and visible.
+
+
+<Quiz question={"Which launchd plist key sets the minimum time between restarts of a crashed agent?"} options={["ThrottleInterval", "KeepAlive", "StartInterval", "RunAtLoad"]} answer={0} explanation={"ThrottleInterval controls the minimum pause before launchd relaunches a crashed job, preventing a hot crash loop from hammering your LLM API."} />
+
+
+<KeyTakeaways items={["launchd is the only first-class process supervisor on macOS; cron has no restart policy and Docker Desktop wastes 2\u20134 GB of RAM on a laptop.", "KeepAlive with `SuccessfulExit = false` plus a raised `ThrottleInterval` gives you crash recovery without a costly restart loop.", "Agents must never exit on transient errors; catch rate limits and requeue with exponential backoff inside the process.", "Use SQLite (WAL mode, single writer) as the durable work queue; one atomic `UPDATE ... RETURNING` claim prevents double-processing.", "Monitor RSS and heartbeat staleness from a separate watchdog that only kills, letting launchd handle the restart.", "Store LLM API keys in the macOS Keychain, never in the plist or a plaintext env file."]} />
+

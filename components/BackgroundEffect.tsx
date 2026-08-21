@@ -46,7 +46,7 @@ const presets: Record<
     "data-aifx-bg": "#0d1117",
     "data-aifx-speed": "1.78",
     "data-aifx-scale": "1.58",
-    "data-aifx-contrast": "2.2",
+    "data-aifx-contrast": "1.1",
     "data-aifx-flow-angle": "33",
     "data-aifx-relief": "2.05",
     "data-aifx-mouse": "0.5",

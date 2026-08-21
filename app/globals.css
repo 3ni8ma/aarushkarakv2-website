@@ -21,10 +21,10 @@
       radial-gradient(120% 100% at 92% 100%, rgba(230, 0, 73, 0.1), transparent 48%),
       linear-gradient(
           155deg,
-          rgba(13, 17, 23, 0.85),
-          rgba(13, 17, 23, 0.78) 45%,
-          rgba(13, 17, 23, 0.82) 70%,
-          rgba(13, 17, 23, 0.75)
+          rgba(13, 17, 23, 0.62),
+          rgba(13, 17, 23, 0.5) 45%,
+          rgba(13, 17, 23, 0.55) 70%,
+          rgba(13, 17, 23, 0.48)
         )
         padding-box,
       linear-gradient(
@@ -48,43 +48,43 @@
     overflow: hidden;
     transform: translateZ(0);
     transition: transform 0.3s ease, box-shadow 0.3s ease;
-    backdrop-filter: blur(24px) saturate(160%);
-    -webkit-backdrop-filter: blur(24px) saturate(160%);
+    backdrop-filter: blur(8px) saturate(120%);
+    -webkit-backdrop-filter: blur(8px) saturate(120%);
   }
 
   @supports (backdrop-filter: blur(1px) url(#liquid-glass)) {
     @media (min-width: 769px) {
       .glass-card {
-        backdrop-filter: url(#liquid-glass) blur(24px) saturate(160%);
-        -webkit-backdrop-filter: url(#liquid-glass) blur(24px) saturate(160%);
+        backdrop-filter: url(#liquid-glass) blur(8px) saturate(120%);
+        -webkit-backdrop-filter: url(#liquid-glass) blur(8px) saturate(120%);
       }
 
       .glass-input {
-        backdrop-filter: url(#liquid-glass) blur(20px) saturate(160%);
-        -webkit-backdrop-filter: url(#liquid-glass) blur(20px) saturate(160%);
+        backdrop-filter: url(#liquid-glass) blur(8px) saturate(120%);
+        -webkit-backdrop-filter: url(#liquid-glass) blur(8px) saturate(120%);
       }
 
       .glass-nav {
-        backdrop-filter: url(#liquid-glass) blur(24px) saturate(160%);
-        -webkit-backdrop-filter: url(#liquid-glass) blur(24px) saturate(160%);
+        backdrop-filter: url(#liquid-glass) blur(8px) saturate(120%);
+        -webkit-backdrop-filter: url(#liquid-glass) blur(8px) saturate(120%);
       }
 
       .glow-btn {
-        backdrop-filter: url(#liquid-glass) blur(24px) saturate(160%);
-        -webkit-backdrop-filter: url(#liquid-glass) blur(24px) saturate(160%);
+        backdrop-filter: url(#liquid-glass) blur(8px) saturate(120%);
+        -webkit-backdrop-filter: url(#liquid-glass) blur(8px) saturate(120%);
       }
 
       .glow-navlink {
-        backdrop-filter: url(#liquid-glass) blur(24px) saturate(160%);
-        -webkit-backdrop-filter: url(#liquid-glass) blur(24px) saturate(160%);
+        backdrop-filter: url(#liquid-glass) blur(8px) saturate(120%);
+        -webkit-backdrop-filter: url(#liquid-glass) blur(8px) saturate(120%);
       }
     }
   }
 
   @media (max-width: 768px) {
     .glass-card {
-      backdrop-filter: blur(24px) saturate(160%);
-      -webkit-backdrop-filter: blur(24px) saturate(160%);
+      backdrop-filter: blur(8px) saturate(120%);
+      -webkit-backdrop-filter: blur(8px) saturate(120%);
     }
   }
 

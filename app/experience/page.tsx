@@ -124,6 +124,15 @@ export default function Experience() {
                 {/* Timeline dot */}
                 <div className="absolute left-0 md:left-1/2 top-6 w-3 h-3 rounded-full bg-cyan shadow-lg shadow-cyan/40 md:-translate-x-1.5 z-10 border-2 border-[#0d1117]" />
 
+                {/* Animated connector */}
+                <div
+                  className={`connector hidden md:block absolute top-[1.625rem] h-px w-[calc(50%-1.5rem)] ${
+                    i % 2 === 0
+                      ? "right-1/2 mr-4"
+                      : "left-1/2 ml-4"
+                  }`}
+                />
+
                 {/* Content */}
                 <div
                   className={`flex-1 ${

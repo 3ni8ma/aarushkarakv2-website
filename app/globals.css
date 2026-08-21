@@ -21,10 +21,10 @@
       radial-gradient(120% 100% at 92% 100%, rgba(230, 0, 73, 0.1), transparent 48%),
       linear-gradient(
           155deg,
-          rgba(13, 17, 23, 0.62),
-          rgba(13, 17, 23, 0.5) 45%,
-          rgba(13, 17, 23, 0.55) 70%,
-          rgba(13, 17, 23, 0.48)
+          rgba(13, 17, 23, 0.85),
+          rgba(13, 17, 23, 0.78) 45%,
+          rgba(13, 17, 23, 0.82) 70%,
+          rgba(13, 17, 23, 0.75)
         )
         padding-box,
       linear-gradient(

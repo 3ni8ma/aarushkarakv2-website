@@ -707,39 +707,3 @@ h1, h2, h3, h4, h5, h6 {
 .hljs-selector-class {
   color: #d67964;
 }
-
-/* Timeline animated connectors */
-.connector {
-  background: repeating-linear-gradient(
-    90deg,
-    transparent,
-    transparent 4px,
-    rgba(0, 242, 254, 0.4) 4px,
-    rgba(0, 242, 254, 0.4) 8px
-  );
-  background-size: 200% 100%;
-  animation: connector-flow 2s linear infinite;
-}
-
-.connector::after {
-  content: "";
-  position: absolute;
-  right: 0;
-  top: -3px;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: rgba(0, 242, 254, 0.5);
-  box-shadow: 0 0 8px rgba(0, 242, 254, 0.4);
-  animation: connector-pulse 2s ease-in-out infinite;
-}
-
-@keyframes connector-flow {
-  from { background-position: 200% 0; }
-  to { background-position: 0% 0; }
-}
-
-@keyframes connector-pulse {
-  0%, 100% { opacity: 0.4; transform: scale(1); }
-  50% { opacity: 1; transform: scale(1.3); }
-}

@@ -1,0 +1,48 @@
+export const title = "Supabase as a Production Backend: Auth, RLS, and Realtime"
+export const date = "August 22, 2026"
+export const tags = ["Supabase", "PostgreSQL", "Auth", "RLS", "Backend"]
+export const repo = "https://github.com/3ni8ma/DoxDock"
+export const difficulty = "Intermediate"
+export const generated = "v2"
+
+import { Faq, KeyTakeaways } from "@/components/mdx"
+
+Supabase gives you Postgres, auth, and realtime without renting servers. But production-grade usage means row-level security done right, session handling, and understanding what's free vs what costs. This post covers the architecture with a civic-data platform as the case study.
+
+## The Postgres-First Pitch
+
+Supabase is PostgreSQL with batteries: the auth schema, storage, and realtime are all Postgres features exposed over APIs. The practical consequence: everything you know about Postgres — indexes, views, EXPLAIN — transfers directly. Data lives in tables you own, not a proprietary store.
+
+## Auth: Sessions, Not Tokens
+
+Email/password auth with refresh tokens, session persistence in localStorage, and `onAuthStateChange` listeners. The trap: relying on the token's JWT instead of letting RLS decide. Auth answers 'who is this user'; RLS answers 'what may they see' — keeping those separate is the whole architecture.
+
+## Row-Level Security as the API Boundary
+
+RLS policies are the authorization layer: `USING` clauses filter reads, `WITH CHECK` clauses gate writes. A user-scoped policy (`user_id = auth.uid()`) means no endpoint can ever leak another user's rows — even a buggy join. Policies are per-table SQL, testable with `set local role authenticated`.
+
+## Realtime Without the Socket Fleet
+
+Supabase realtime is Postgres replication broadcast over websockets. For a dashboard, the pattern: subscribe to channel filters, apply deltas to local state, and treat the subscription as a cache — not the source of truth. Reconnection with exponential backoff is mandatory; the server does not guarantee delivery.
+
+## Storage, Edge Functions, and the Free Tier
+
+Storage buckets with MIME policies and signed URLs for private files; edge functions (Deno) for webhooks and server-side logic that must not ship in the client. The free tier caps: database size, monthly auth users, edge function invocations — know the limits before choosing the architecture.
+
+## The Zero-Cost Stack Composition
+
+Supabase pairs with a Vercel frontend and a Python backend that reads the same Postgres. The seam: the Python service uses a service-role key (server-only) while the client uses user JWTs with RLS. One database, two trust boundaries, zero middleware to maintain.
+
+
+<Callout type="note">The bank-driven fallback wrote this post because the LLM proxy was unreachable — structure and facts come from the topic outline, and the next regeneration will enrich it.</Callout>
+
+
+<KeyTakeaways items={["The Postgres-First Pitch", "Auth: Sessions, Not Tokens", "Row-Level Security as the API Boundary", "Realtime Without the Socket Fleet", "Storage, Edge Functions, and the Free Tier", "The Zero-Cost Stack Composition"]} />
+
+
+<Faq items={[{"q": "What is the key idea in the postgres-first pitch?", "a": "It is one of the core decisions that shape this topic. The section above walks through the reasoning, the tradeoffs, and the practical takeaway in context."}, {"q": "What is the key idea in auth: sessions, not tokens?", "a": "It is one of the core decisions that shape this topic. The section above walks through the reasoning, the tradeoffs, and the practical takeaway in context."}, {"q": "What is the key idea in row-level security as the api boundary?", "a": "It is one of the core decisions that shape this topic. The section above walks through the reasoning, the tradeoffs, and the practical takeaway in context."}]} />
+
+## Conclusion
+Supabase is a shortcut to a real Postgres backend, not a toy. The discipline — RLS as the security boundary, sessions over tokens, treating realtime as a cache — is what separates a demo from something you'd trust with real data.
+
+[View the project on GitHub](https://github.com/3ni8ma/DoxDock)

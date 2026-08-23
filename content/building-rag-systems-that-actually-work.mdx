@@ -1,0 +1,90 @@
+export const title = "Building RAG Systems That Actually Work: Lessons from Production"
+export const date = "August 23, 2026"
+export const tags = ["RAG", "AI", "LLMs", "Vector Databases", "Production Systems"]
+export const repo = "https://github.com/3ni8ma/aarushkarakv2-website"
+export const difficulty = "Advanced"
+export const generated = "v2"
+
+import { Callout, CodeBlock, Faq, KeyTakeaways, Quiz } from "@/components/mdx"
+
+The demo worked perfectly. The documents loaded, the embeddings computed, the retrieval returned relevant chunks, and the language model produced fluent, accurate answers. Then I pointed it at real data and everything broke. The chunks were too large, the embeddings missed the point, and the model hallucinated citations that did not exist. The gap between a RAG demo and a RAG system that works in production is wider than most people expect. This is what I learned crossing that gap.
+
+## The Demo-to-Production Gap
+
+RAG demos use clean, well-structured documents. The embedding model has seen similar content during training. The questions are designed to match the available information. In production, documents are messy, inconsistent, and contradictory. Users ask questions that require synthesizing information from multiple sources. The model must handle ambiguity, partial information, and questions that cannot be answered from the available context.
+
+The first production failure I hit was chunking. My demo used PDF documents with clear section breaks. Production documents included emails, chat logs, spreadsheets, and scanned images with OCR text. Each format required a different chunking strategy, and getting any one wrong degraded the entire pipeline.
+
+## Advanced Chunking: Beyond Fixed-Size Windows
+
+Fixed-size chunking is the default, but it is rarely optimal. The problem is that natural language does not respect fixed boundaries. A key insight might span two chunks, with the question in one and the answer in the other. Fixed-size chunks break this connection.
+
+Recursive chunking splits text hierarchically: first by paragraph, then by sentence, then by token. This preserves the natural structure of the content. A paragraph about a single concept stays together. If a paragraph is too long, it splits at sentence boundaries. If a sentence is too long, it splits at token boundaries.
+
+Parent-child chunking takes this further. Small child chunks are used for embedding and retrieval because they are focused and specific. But the context returned to the language model includes the parent chunk — the full paragraph or section — which provides the context needed for accurate generation. This gives you the precision of small chunks with the context of large ones.
+
+## Reranking: The Cheap Precision Boost
+
+Initial retrieval with HNSW is fast but approximate. Reranking takes the top-k results from initial retrieval and rescores them with a more precise model. Cross-encoder rerankers compute the similarity between the query and each document jointly, which is more accurate than the bi-encoder used for initial retrieval.
+
+The latency cost is linear in the number of reranked documents. Reranking 20 documents takes roughly 50-100ms on a modern GPU. The precision gain is typically 10-20% in nDCG. For most production RAG systems, this is the single highest-ROI improvement you can make.
+
+I rerank in two stages: first retrieve 50 candidates with HNSW, rerank with a cross-encoder, then take the top 5 for the language model. This combination achieves retrieval quality comparable to brute-force search at a fraction of the cost.
+
+## Query Transformation: Improving the Input
+
+Users do not write optimal search queries. They ask questions in natural language, which contains stop words, ambiguity, and implicit context. Query transformation converts the user's question into a better search query.
+
+HyDE (Hypothetical Document Embeddings) is one approach: generate a hypothetical answer to the question, embed that answer, and use it as the search query. The intuition is that the hypothetical answer is closer in embedding space to the relevant documents than the question itself.
+
+Query decomposition breaks complex questions into sub-questions. 'What are the differences between LoRA and QLoRA in terms of memory and performance?' becomes two queries: 'LoRA memory requirements' and 'QLoRA memory requirements'. Each sub-query retrieves relevant documents, and the results are combined.
+
+Query expansion adds synonyms and related terms. 'How to fix a bug' becomes 'how to fix a bug debug troubleshoot resolve error'. This increases recall at the cost of some precision.
+
+## Context Window Management
+
+Language models have finite context windows, and you must fit the retrieved documents, the user's question, and the system prompt into that window. The naive approach — concatenate all retrieved documents — often exceeds the limit or wastes tokens on low-relevance content.
+
+I use a relevance-weighted approach: retrieve more documents than needed, score each by relevance to the query, and include documents in order of relevance until the context window is full. This ensures the most relevant information is always included, even when the total context exceeds the window.
+
+Another technique is context compression: use a small model to extract the relevant sentences from each retrieved document, discarding the rest. This reduces token usage by 50-70% while preserving the key information. The compression model is cheap to run and can be applied at retrieval time.
+
+## Evaluation in Production
+
+RAG evaluation requires measuring three things: retrieval quality (are the right documents found?), answer quality (is the answer correct?), and faithfulness (does the answer come from the retrieved context?).
+
+I use RAGAS (Retrieval Augmented Generation Assessment) for automated evaluation. It computes context precision, context recall, answer similarity, and faithfulness using a language model as a judge. The faithfulness score is the most important: it measures whether the answer can be verified against the retrieved context.
+
+For production monitoring, I sample 5% of queries and evaluate them manually. Automated metrics catch gross failures, but subtle issues — like an answer that is technically correct but misleading — require human judgment. The manual evaluation also reveals queries that the system cannot handle, which feeds back into the improvement cycle.
+
+## The Boring Infrastructure
+
+The RAG pipeline is the interesting part. The boring parts — document parsing, embedding storage, index management, caching, monitoring — are what make it production-ready.
+
+Document parsing is the most underrated challenge. PDFs have tables, images, headers, footers, and multi-column layouts. Emails have threads, attachments, and metadata. Chat logs have timestamps, usernames, and reactions. Each format needs a parser that extracts the text content while preserving structure.
+
+Caching embeddings and retrieved results saves compute. Most queries are similar to previous queries. A semantic cache that stores the query embedding and the top-k results can serve 30-50% of queries without touching the vector database.
+
+Monitoring tracks retrieval latency, answer quality, and error rates. The most important metric is the faithfulness score over time. A decreasing faithfulness trend means the system is generating answers that cannot be verified — a warning sign that the documents are insufficient or the retrieval is failing.
+
+
+
+<CodeBlock code={"# Example implementation\nimport torch\nfrom transformers import AutoModel, AutoTokenizer\n\nmodel = AutoModel.from_pretrained('base-model')\n# Load LoRA adapters\nmodel.load_adapter('adapter-path')\n"} lang="python" filename="load_model.py" />
+
+<Callout type="tip">The demo-to-production gap in RAG is real: clean documents and designed questions hide problems that real data exposes immediately.</Callout>
+
+<Callout type="warn">RAG demos use clean, well-structured documents.</Callout>
+
+<KeyTakeaways items=["The demo-to-production gap in RAG is real: clean documents and designed questions hide problems that real data exposes immediately.", "Parent-child chunking gives you small chunks for precise retrieval and large chunks for contextual generation \u2014 the best of both worlds.", "Reranking with a cross-encoder is the single highest-ROI improvement, typically boosting retrieval precision by 10-20% for 50-100ms of latency.", "Query transformation (HyDE, decomposition, expansion) improves retrieval by converting natural language questions into better search queries.", "Faithfulness \u2014 whether the answer can be verified against retrieved context \u2014 is the most important metric for production RAG systems.", "The boring infrastructure (parsing, caching, monitoring) is what separates a demo from a production system."] />
+
+<Quiz question={"What is parent-child chunking in RAG?"} options={["Using different embedding models for parent and child documents", "Small chunks for retrieval, large chunks for generation context", "A hierarchical database structure for storing documents", "Splitting documents by parent-child relationships in metadata"]} answer={1} explanation={"Parent-child chunking uses small child chunks for embedding and retrieval (focused and specific) but returns the larger parent chunk as context for generation. This combines retrieval precision with contextual richness."} />
+
+<Faq items={[{"q": "How do I handle documents that contradict each other?", "a": "This is a fundamental RAG challenge. The best approach is to include document metadata (date, source, author) and let the system surface contradictions to the user rather than silently choosing one. Some systems use a 'confidence score' based on source authority and recency to weight conflicting information."}, {"q": "What is the typical latency for a RAG query?", "a": "End-to-end latency is typically 500ms-2s. The breakdown is: embedding the query (10-50ms), vector search (1-10ms), reranking (50-100ms), and language model generation (200-1500ms). The language model is the bottleneck; everything else is fast."}, {"q": "Can RAG handle multi-modal content (images, tables)?", "a": "Yes, but it requires multi-modal embeddings. Models like CLIP can embed images and text into the same vector space, enabling cross-modal retrieval. Tables are typically converted to text descriptions or markdown before embedding. The key challenge is maintaining the relationship between visual and textual content."}, {"q": "How often should I re-embed my documents?", "a": "Re-embed when the embedding model changes or when documents are significantly updated. For most systems, this means re-embedding the full corpus monthly or when you upgrade the embedding model. Incremental embedding of new documents is sufficient for day-to-day updates."}]} />
+
+## Conclusion
+
+Monitoring tracks retrieval latency, answer quality, and error rates. The most important metric is the faithfulness score over time. A decreasing faithfulness trend means the system is generating answers that cannot be verified — a warning sign that the documents are insufficient or the retrieval is failing.
+
+
+
+[View the project on GitHub](https://github.com/3ni8ma/aarushkarakv2-website)

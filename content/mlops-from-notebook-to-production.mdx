@@ -1,0 +1,90 @@
+export const title = "MLOps: From Notebook to Production Pipeline"
+export const date = "August 24, 2026"
+export const tags = ["MLOps", "Machine Learning", "CI/CD", "Python", "DevOps"]
+export const repo = "https://github.com/3ni8ma/aarushkarakv2-website"
+export const difficulty = "Advanced"
+export const generated = "v2"
+
+import { Callout, CodeBlock, Faq, KeyTakeaways, Quiz } from "@/components/mdx"
+
+My machine learning model had 97% accuracy in the notebook. It had 71% accuracy in production. The gap was not mysterious: the notebook used clean, preprocessed data. Production received raw data with missing values, inconsistent formatting, and edge cases that never appeared in the training set. The model was not wrong. The pipeline was wrong. That realization sent me down the MLOps rabbit hole, and what I found there changed how I build ML systems.
+
+## The Notebook-to-Production Gap
+
+Notebooks are exploratory tools. They encourage interactive, non-linear workflows where you load data, try something, look at the results, and iterate. This is great for research and terrible for production. In a notebook, the data preprocessing steps are implicit: you run cells in order, and the state accumulates. In production, every step must be explicit, versioned, and reproducible.
+
+The three failures I hit most often are: data leakage (the model sees test data during training because the preprocessing pipeline leaks information), training-serving skew (the preprocessing in training differs from production), and silent data drift (the input distribution changes over time, degrading model performance without triggering errors).
+
+MLOps is the practice of addressing these failures systematically. It is not about tools — it is about the discipline of treating ML pipelines as software systems that need testing, monitoring, and version control.
+
+## Experiment Tracking: Remembering What Worked
+
+In a notebook, you try dozens of experiments and rely on memory or messy comments to track what worked. In production, you need a systematic record of every experiment: the code version, the data version, the hyperparameters, the metrics, and the artifacts.
+
+MLflow and Weights & Biases are the most common tools. They log parameters, metrics, and artifacts for each experiment. The key discipline is logging everything automatically — do not rely on manual logging, because you will forget or log inconsistently.
+
+The most valuable feature is artifact tracking. When you train a model, log the model file, the preprocessing pipeline, and the evaluation results as artifacts. Months later, when you need to reproduce a result or debug a regression, the artifact store is the single source of truth.
+
+## Feature Stores: Consistent Features Everywhere
+
+A feature store centralizes feature computation so that training and serving use the same code. Without a feature store, you compute features in a notebook for training and in a separate service for serving. The two implementations inevitably diverge.
+
+The feature store provides a consistent API for computing features. During training, you compute features from historical data. During serving, you compute features from real-time data. Both use the same transformation logic, eliminating training-serving skew.
+
+Feast is the most common open-source feature store. It stores feature definitions as code, manages feature materialization (pre-computing features for batch serving), and provides a feature server for real-time serving. The learning curve is steep, but the payoff is eliminating an entire class of bugs.
+
+## Model Versioning and Registry
+
+A model registry tracks every trained model: its version, the training data it used, the metrics it achieved, and its deployment status. Without a registry, you end up with model files scattered across directories with names like 'model_v2_final_v3_best.pth'.
+
+The registry enforces a lifecycle: candidate, staging, production, archived. A model must pass evaluation gates before moving from staging to production. This prevents the 'someone deployed the wrong model' failure mode.
+
+The most important feature is lineage: the ability to trace a production model back to the exact code, data, and hyperparameters that produced it. When a model fails in production, lineage is how you reproduce the failure and fix it.
+
+## CI/CD for Machine Learning
+
+Traditional CI/CD tests code. ML CI/CD tests code, data, and models. The pipeline has three stages: data validation, model training and evaluation, and deployment.
+
+Data validation checks that the training data meets expectations: no unexpected null values, feature distributions within expected ranges, no data leakage. Great Expectations and Pandera are common tools. A data validation failure should block training — a model trained on bad data is worse than no model.
+
+Model evaluation checks that the trained model meets quality thresholds: accuracy above a minimum, latency below a maximum, fairness metrics within bounds. The evaluation uses a held-out test set that the model never saw during training. An evaluation failure should block deployment.
+
+Deployment uses blue-green or canary strategies. The new model is deployed alongside the old one, and traffic is gradually shifted. If error rates spike or latency increases, the deployment is rolled back automatically.
+
+## Monitoring: Detecting Silent Failures
+
+ML models fail silently. A model that was 97% accurate can degrade to 80% accuracy without any error, exception, or alert. The degradation happens because the input data changes: user behavior shifts, external factors change, or the data pipeline introduces bugs.
+
+Monitoring tracks three types of signals: model performance (accuracy, latency, error rates), data quality (feature distributions, null rates, outlier rates), and business metrics (conversion rates, user engagement). A drop in any of these signals triggers an alert.
+
+The most common monitoring failure is not having enough data to evaluate performance. If the model makes 100 predictions per day, you need several days of data to detect a 5% accuracy drop with statistical significance. For low-volume models, consider using proxy metrics (confidence scores, prediction distributions) that can be evaluated on every prediction.
+
+## What I'd Tell a Beginner
+
+Start with experiment tracking and version control. These two practices give you the most value with the least effort. Use MLflow or Weights & Biases for experiment tracking, and store your data and models in versioned storage (DVC, S3 with versioning, or a registry).
+
+Do not try to build a full MLOps platform on day one. Add capabilities incrementally: first tracking, then data validation, then CI/CD, then monitoring. Each layer builds on the previous one, and each layer provides value independently.
+
+The most important lesson is that MLOps is not about tools. It is about the discipline of treating ML systems as production software. That means tests, monitoring, versioning, and documentation. The tools help, but the discipline is what makes the difference.
+
+
+
+<CodeBlock code={"# Example implementation\nimport torch\nfrom transformers import AutoModel, AutoTokenizer\n\nmodel = AutoModel.from_pretrained('base-model')\n# Load LoRA adapters\nmodel.load_adapter('adapter-path')\n"} lang="python" filename="load_model.py" />
+
+<Callout type="tip">Notebooks are for exploration; production ML requires explicit, versioned, and reproducible pipelines.</Callout>
+
+<Callout type="warn">Notebooks are exploratory tools.</Callout>
+
+<KeyTakeaways items=["Notebooks are for exploration; production ML requires explicit, versioned, and reproducible pipelines.", "Experiment tracking is the highest-ROI MLOps practice \u2014 log everything automatically, including code, data, and hyperparameter versions.", "Feature stores eliminate training-serving skew by centralizing feature computation in a single, versioned codebase.", "Model registries enforce lifecycle management and provide lineage \u2014 the ability to trace a production model to its training artifacts.", "ML CI/CD tests code, data, and models \u2014 data validation failures should block training, evaluation failures should block deployment.", "ML models fail silently; monitoring must track model performance, data quality, and business metrics to detect degradation."] />
+
+<Quiz question={"What is training-serving skew?"} options={["The model performs differently on training data vs. test data", "The feature computation code differs between training and serving", "The training data is biased compared to the serving data", "The model is too large to serve in production"]} answer={1} explanation={"Training-serving skew occurs when the feature computation logic used during training differs from the logic used during serving. This causes the model to receive different inputs for the same data, degrading performance. Feature stores eliminate this by centralizing feature computation."} />
+
+<Faq items={[{"q": "What is the minimum viable MLOps setup?", "a": "Experiment tracking (MLflow or W&B), version control for code and data (Git + DVC), and a model registry. These three components address the most common failures: lost experiments, unreproducible results, and undeployed models."}, {"q": "How do I handle data drift?", "a": "Monitor feature distributions in production and compare them to training distributions. Statistical tests (KS test, PSI) can detect drift automatically. When drift is detected, retrain the model on recent data. For gradual drift, schedule regular retraining; for sudden drift, trigger retraining on alert."}, {"q": "Do I need Kubernetes for MLOps?", "a": "Not necessarily. Kubernetes is useful for large-scale serving with auto-scaling, but most teams start with simpler deployments: a FastAPI service behind a load balancer, or a serverless deployment on AWS Lambda or Google Cloud Run. Add Kubernetes when you need it, not because it is trendy."}, {"q": "How often should I retrain my model?", "a": "It depends on how fast your data changes. For most applications, weekly or monthly retraining is sufficient. For high-frequency trading or real-time recommendation systems, daily or hourly retraining may be necessary. The key is to monitor performance and retrain when it degrades, not on a fixed schedule."}]} />
+
+## Conclusion
+
+The most important lesson is that MLOps is not about tools. It is about the discipline of treating ML systems as production software. That means tests, monitoring, versioning, and documentation. The tools help, but the discipline is what makes the difference.
+
+
+
+[View the project on GitHub](https://github.com/3ni8ma/aarushkarakv2-website)

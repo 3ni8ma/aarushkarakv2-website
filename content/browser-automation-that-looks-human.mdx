@@ -1,0 +1,48 @@
+export const title = "Browser Automation That Looks Human"
+export const date = "August 25, 2026"
+export const tags = ["Browser Automation", "Playwright", "Stealth", "Fingerprinting", "Agents"]
+export const repo = "https://github.com/anomalyco/camofox-browser"
+export const difficulty = "Advanced"
+export const generated = "v2"
+
+import { Faq, KeyTakeaways } from "@/components/mdx"
+
+Undetected automation is an engineering problem: fingerprints, navigator properties, input cadence, and session persistence. This post covers stealth browser architecture — what detection systems measure, how to defeat each signal, and where the line between automation and impersonation sits.
+
+## What Detection Systems Measure
+
+A fingerprint is a vector: user agent, WebGL vendor and renderer strings, canvas hash, audio context, screen metrics, fonts, timezone, and navigator property consistency. Bot detectors score the vector for anomalies — a headless Chromium with `navigator.webdriver=true` fails instantly; the game is scoring like a real device.
+
+## Patching the Leaky Surface
+
+The leaks: `navigator.webdriver`, missing `window.chrome`, the `--headless` UA, and iframe parent attributes. The fixes: CDP session to override properties before any script runs, spoofed WebGL strings, and a realistic UA/fingerprint pair. The rule: every override must be consistent — a Chrome UA with a Safari canvas hash is worse than no spoofing.
+
+## Input That Reads as Human
+
+Automated typing is instant and perfectly regular; humans type with variable inter-key latency, occasional corrections, and pauses. The pattern: randomized per-character delays with log-normal distribution, jittered mouse movement along bezier curves, and scroll speeds that vary. Timing consistency across a session matters more than any single delay.
+
+## Session Persistence: The Cookie Jar That Matters
+
+Sites trust continuity: a fresh context with no cookies, no localStorage, and a first-seen IP screams automation. The pattern: persistent browser profiles stored between runs, realistic storage state, and reusing the same context for related tasks. Trust compounds over time.
+
+## Orchestrating Multi-Context Automation
+
+Different tasks need different identities. The architecture: a context manager that provisions profiles, health-checks them (does this context still pass a fingerprint test?), and rotates on failure. A context that gets flagged is retired, not reused — one burned context can poison everything it touched.
+
+## The Ethics of Blending In
+
+Human-like automation exists on a spectrum: scraping public data with throttling is defensible; impersonating a user or evading explicit blocks is not. The operational rules that keep a project defensible: rate limits well under human capacity, respect robots.txt and ToS, and never automate account creation or payment flows.
+
+
+<Callout type="note">The bank-driven fallback wrote this post because the LLM proxy was unreachable — structure and facts come from the topic outline, and the next regeneration will enrich it.</Callout>
+
+
+<KeyTakeaways items={["What Detection Systems Measure", "Patching the Leaky Surface", "Input That Reads as Human", "Session Persistence: The Cookie Jar That Matters", "Orchestrating Multi-Context Automation", "The Ethics of Blending In"]} />
+
+
+<Faq items={[{"q": "What is the key idea in what detection systems measure?", "a": "It is one of the core decisions that shape this topic. The section above walks through the reasoning, the tradeoffs, and the practical takeaway in context."}, {"q": "What is the key idea in patching the leaky surface?", "a": "It is one of the core decisions that shape this topic. The section above walks through the reasoning, the tradeoffs, and the practical takeaway in context."}, {"q": "What is the key idea in input that reads as human?", "a": "It is one of the core decisions that shape this topic. The section above walks through the reasoning, the tradeoffs, and the practical takeaway in context."}]} />
+
+## Conclusion
+Human-like browser automation is a fingerprint consistency problem, not a feature list. Every patched leak must be coherent with the identity you're projecting — and the engineering discipline matters less than the boundaries you refuse to cross.
+
+[View the project on GitHub](https://github.com/anomalyco/camofox-browser)

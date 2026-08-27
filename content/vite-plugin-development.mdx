@@ -1,0 +1,48 @@
+export const title = "Vite Plugin Development: Hooks, Transforms, and Virtual Modules"
+export const date = "August 27, 2026"
+export const tags = ["Vite", "Plugins", "Build Tools", "JavaScript", "Bundler"]
+export const repo = "https://github.com/3ni8ma/vite-plugin"
+export const difficulty = "Intermediate"
+export const generated = "v2"
+
+import { Faq, KeyTakeaways } from "@/components/mdx"
+
+Vite's plugin API is how tools like Tailwind, sitemaps, and OG-image generators become one-line integrations. This post covers the plugin lifecycle, transform hooks, virtual modules, and building a real sitemap plugin from scratch.
+
+## The Plugin Container Model
+
+A Vite plugin is an object with hooks, layered over Rollup. The phases: `config` (adjust Vite config), `configResolved` (read final config), `buildStart` (initialize), `transform` (rewrite module source), `generateBundle` (write output files), `closeBundle`. Understanding when each runs — dev vs build — is half the API.
+
+## Transforms: Rewriting Modules Safely
+
+A `transform` hook receives code + id and returns modified code. The discipline: only touch files you own (check `id` patterns), return `null` to pass through untouched, and never rely on textual assumptions about frameworks — use the loaders' ASTs or the module graph instead.
+
+## Virtual Modules for Injected Code
+
+Virtual modules let a plugin provide modules that don't exist on disk: `virtual:my-plugin-data`. Intercept in `resolveId`, emit in `load`. This is how plugins inject runtime data (config, asset manifests, environment) without touching the user's source tree — and how sitemap plugins feed route lists to components.
+
+## Build-Time Asset Generation
+
+The `generateBundle` hook writes files into the output: sitemaps, robots, feeds, OG images. The pattern: collect data during earlier hooks (routes from the module graph, page metadata from transforms), then emit `this.emitFile({ type: 'asset', fileName, source })`. Assets emitted here are hashed, deployed, and cacheable like any other build output.
+
+## Dev Mode: Middleware and HMR
+
+In dev, plugins get an HTTP middleware (`configureServer`) and HMR hooks. A sitemap plugin doesn't need it, but a plugin serving mock APIs or proxying websockets lives here. The rule: dev features must not leak into the production bundle — gate everything on `config.command`.
+
+## Publishing and Testing Plugins
+
+A Vite plugin is a library: `vite-plugin-*` naming, ESM-first, exports map, and a test suite that runs the real Vite build against a fixture project. The `buildTest` pattern: a temp project, `build()`, and assertions on output files — faster and more honest than unit-testing hooks in isolation.
+
+
+<Callout type="note">The bank-driven fallback wrote this post because the LLM proxy was unreachable — structure and facts come from the topic outline, and the next regeneration will enrich it.</Callout>
+
+
+<KeyTakeaways items={["The Plugin Container Model", "Transforms: Rewriting Modules Safely", "Virtual Modules for Injected Code", "Build-Time Asset Generation", "Dev Mode: Middleware and HMR", "Publishing and Testing Plugins"]} />
+
+
+<Faq items={[{"q": "What is the key idea in the plugin container model?", "a": "It is one of the core decisions that shape this topic. The section above walks through the reasoning, the tradeoffs, and the practical takeaway in context."}, {"q": "What is the key idea in transforms: rewriting modules safely?", "a": "It is one of the core decisions that shape this topic. The section above walks through the reasoning, the tradeoffs, and the practical takeaway in context."}, {"q": "What is the key idea in virtual modules for injected code?", "a": "It is one of the core decisions that shape this topic. The section above walks through the reasoning, the tradeoffs, and the practical takeaway in context."}]} />
+
+## Conclusion
+Vite plugins are the cleanest expression of the bundler-as-platform idea. Hook order, transform discipline, and virtual modules cover most real needs — and a plugin that generates build artifacts (sitemaps, feeds) is one of the highest-leverage integrations a site can have.
+
+[View the project on GitHub](https://github.com/3ni8ma/vite-plugin)

@@ -1,0 +1,48 @@
+export const title = "Running a Local LLM Proxy: OpenAI-Compatible Gateways"
+export const date = "August 29, 2026"
+export const tags = ["LLM", "API", "Proxy", "Local AI", "Infrastructure"]
+export const repo = "https://github.com/3ni8ma/deepseek-free-proxy"
+export const difficulty = "Intermediate"
+export const generated = "v2"
+
+import { Faq, KeyTakeaways } from "@/components/mdx"
+
+An OpenAI-compatible proxy in front of a local model turns every AI tool you own into a free, private endpoint. This post covers the gateway pattern: API compatibility, streaming, timeouts, caching, and routing between providers.
+
+## Why a Gateway
+
+Every AI tool — editors, agents, scripts — speaks the OpenAI chat-completions dialect. A local gateway that speaks that dialect and forwards to whatever model you actually run makes every tool plug into local inference with zero code changes. One port, many consumers.
+
+## The Compatibility Contract
+
+The surface that must match: `/v1/chat/completions` with `messages`, `model`, `temperature`, `max_tokens`; SSE streaming via `stream: true`; and error responses shaped like OpenAI's. Tools that validate models (a hardcoded model list) will reject your endpoint — accept any model name and map it, or report it honestly.
+
+## Streaming Without Breaking Clients
+
+Clients that expect streaming fail on buffered responses. The implementation: read the upstream stream chunk-by-chunk, re-emit as SSE `data:` frames, flush on each token, and terminate with `data: [DONE]`. Timeouts are the silent killer — an idle upstream must send keep-alive comments or the client hangs forever.
+
+## Caching as the Cost Killer
+
+Identical prompts are common across sessions (system prompts, templates, retries). A prompt-hash cache with TTL serves repeated requests instantly and cuts provider spend. The design decision: cache exact matches only — semantic caching of LLM output is where correctness dies.
+
+## Routing and Fallback
+
+A gateway that routes by model name, cost budget, or availability. The fallback ladder: local model → free tier → paid provider, with health checks that demote a failing upstream. The pattern: retry with backoff on 429/5xx, fail over on repeated failures, and never silently return a different model than requested.
+
+## Operational Details That Matter
+
+launchd or systemd supervision, structured logs with per-request latency, and a health endpoint (`/v1/models`) for uptime monitoring. The gateway becomes the single place where model behavior — version, temperature caps, token limits — is controlled for the whole machine.
+
+
+<Callout type="note">The bank-driven fallback wrote this post because the LLM proxy was unreachable — structure and facts come from the topic outline, and the next regeneration will enrich it.</Callout>
+
+
+<KeyTakeaways items={["Why a Gateway", "The Compatibility Contract", "Streaming Without Breaking Clients", "Caching as the Cost Killer", "Routing and Fallback", "Operational Details That Matter"]} />
+
+
+<Faq items={[{"q": "What is the key idea in why a gateway?", "a": "It is one of the core decisions that shape this topic. The section above walks through the reasoning, the tradeoffs, and the practical takeaway in context."}, {"q": "What is the key idea in the compatibility contract?", "a": "It is one of the core decisions that shape this topic. The section above walks through the reasoning, the tradeoffs, and the practical takeaway in context."}, {"q": "What is the key idea in streaming without breaking clients?", "a": "It is one of the core decisions that shape this topic. The section above walks through the reasoning, the tradeoffs, and the practical takeaway in context."}]} />
+
+## Conclusion
+A local LLM proxy is the quiet infrastructure that makes local AI practical: one compatible endpoint, streaming done right, caching for cost, and honest routing. It turns 'AI tools need APIs' into 'everything already works, it's just local now.'
+
+[View the project on GitHub](https://github.com/3ni8ma/deepseek-free-proxy)

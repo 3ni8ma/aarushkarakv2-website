@@ -1,0 +1,94 @@
+export const title = "Transformers Explained: From Attention to GPT"
+export const date = "August 31, 2026"
+export const tags = ["AI", "Transformers", "Deep Learning", "NLP", "Attention Mechanism"]
+export const repo = "https://github.com/3ni8ma/aarushkarakv2-website"
+export const difficulty = "Intermediate"
+export const generated = "v2"
+
+import { Callout, CodeBlock, Faq, KeyTakeaways, Quiz } from "@/components/mdx"
+
+At 1:15 AM on a Wednesday, I was staring at a matrix multiplication that refused to converge. The loss curve looked like a seismograph during an earthquake. I had been debugging a transformer implementation for six hours, and the problem was not the math. It was that I did not understand what attention was actually doing. I had read the paper, copied the architecture, and assumed the rest would follow. It did not. The lesson was that transformers are not complicated because they have many parts. They are complicated because each part does something subtle, and the subtlety compounds.
+
+## Why Transformers Changed Everything
+
+Before transformers, sequence models processed tokens one at a time, left to right. RNNs carried a hidden state that was supposed to remember everything relevant from the past. In practice, the hidden state was a bottleneck: a single vector trying to encode an entire sentence. LSTMs improved this with gates, but the fundamental problem remained. The further a token was from the current position, the harder it was to remember.
+
+Transformers threw away the recurrence entirely. Instead of processing tokens sequentially, they process all tokens in parallel and let the model learn which tokens should attend to which other tokens. This single change — replacing sequential recurrence with parallel attention — unlocked everything from GPT to BERT to the model that generated this text.
+
+## Self-Attention: The Core Mechanism
+
+Self-attention answers one question for every token in a sequence: which other tokens should I pay attention to? The mechanism works by creating three vectors from each token: a query (what am I looking for?), a key (what do I contain?), and a value (what do I actually contribute?).
+
+The attention score between two tokens is the dot product of the query of one with the key of the other, scaled by the square root of the dimension. This gives a raw relevance score. Softmax turns it into a probability distribution. Multiply that distribution by the value vectors, and you get the attended output.
+
+The key insight is that this happens for every token simultaneously. There is no sequential dependency. A token at position 1 can attend to a token at position 500 with the same cost as attending to position 2. This is what makes transformers fast on modern hardware: the entire attention computation is a matrix multiplication, and GPUs love matrix multiplications.
+
+## Multi-Head Attention: Parallel Perspectives
+
+A single attention head learns one type of relationship. But language has many types of relationships: syntactic (subject-verb agreement), semantic (pronoun reference), positional (what came before), and contextual (sentiment shift). Multi-head attention runs several attention computations in parallel, each with its own learned projection of queries, keys, and values.
+
+Think of it as looking at a sentence through multiple lenses simultaneously. One head might learn to track pronoun references. Another might learn to attend to negation words. A third might learn to capture the relationship between a question and its answer. The outputs of all heads are concatenated and projected into the final representation.
+
+This is not just a trick for capacity. Different heads genuinely learn different things. Visualizations of trained transformers show that some heads consistently attend to the previous token, others attend to specific syntactic roles, and others attend to semantically similar words regardless of position.
+
+## Positional Encoding: Remembering Order
+
+Attention is permutation-invariant: it does not know the order of tokens. If you shuffle the input, the attention scores change but the mechanism has no built-in way to know that word 3 came before word 5. Positional encoding fixes this by adding a vector to each token that encodes its position in the sequence.
+
+The original paper used sinusoidal functions: sine for even dimensions, cosine for odd dimensions. The frequency decreases with dimension, creating a unique pattern for each position. Later models learned positional embeddings directly. Some models use relative positional encodings that encode the distance between tokens rather than absolute positions.
+
+The choice matters more than it seems. Absolute positions work well for fixed-length sequences. Relative positions generalize better to longer sequences. RoPE (Rotary Position Embeddings) encode position by rotating the query and key vectors, and have become the default in most modern models because they handle length extrapolation gracefully.
+
+## The Feed-Forward Network: Where Knowledge Lives
+
+After attention, each token passes through a feed-forward network (FFN). This is typically two linear layers with a nonlinearity in between, applied independently to each position. The FFN is where most of the model's parameters live — in GPT-3, the FFN layers account for roughly two-thirds of the total parameters.
+
+Recent research suggests that the FFN acts as a key-value memory. The first layer maps the input to a set of 'keys' (concepts), and the second layer maps those keys to 'values' (outputs). When you prompt a language model and get a specific answer, the FFN is where that answer was stored during training.
+
+This has implications for model editing and knowledge injection. If the FFN is a memory, then modifying specific neurons can change specific facts. This is the basis of recent work on model editing — changing what a model knows without retraining it from scratch.
+
+## Layer Normalization and Residual Connections
+
+Transformers stack many layers — GPT-3 has 96. Without careful normalization, gradients explode or vanish during training. Two mechanisms prevent this.
+
+Residual connections add the input of a sub-layer to its output. This creates a 'skip connection' that allows gradients to flow directly through the network without passing through every transformation. The gradient of a residual connection is always at least 1, which prevents vanishing gradients.
+
+Layer normalization scales the activations of each layer to have zero mean and unit variance. This keeps the training dynamics stable regardless of the scale of the weights. Pre-norm transformers (normalizing before the sub-layer) have largely replaced post-norm transformers (normalizing after) because they train more stably at scale.
+
+## Training at Scale: What Breaks and What Fixes It
+
+Training a transformer from scratch is not just a matter of writing the architecture and feeding it data. Several things break at scale.
+
+Gradient accumulation is necessary when the batch size that would give stable training does not fit in GPU memory. Instead of computing the gradient over one large batch, you compute it over several small batches and sum the gradients. The effective batch size is the sum of the micro-batches.
+
+Mixed-precision training uses float16 or bfloat16 for most computations but keeps a float32 copy of the master weights. The forward and backward passes are faster in reduced precision, but the weight updates need full precision to avoid underflow. Loss scaling multiplies the loss by a large number before backpropagation, then divides the gradients by that number, keeping them in the representable range of float16.
+
+Learning rate warmup starts the learning rate at a small value and increases it over the first few thousand steps. This prevents the early training instability that comes from randomly initialized weights interacting with a large learning rate.
+
+## What I Learned the Hard Way
+
+My transformer implementation had a bug in the positional encoding that I did not catch for three days. The sine and cosine functions were swapped for odd dimensions. The model trained, the loss decreased, and the outputs looked almost right — which was worse than a clear failure. The lesson was that transformers are precise instruments: every component matters, and 'almost right' is often a sign of a subtle bug rather than a model that is nearly converged.
+
+The broader lesson is that understanding transformers requires building one from scratch at least once. Reading the paper is not enough. Watching a tutorial is not enough. The act of implementing each component — attention, positional encoding, the feed-forward network, the training loop — forces you to confront the design decisions that the paper glosses over. Those design decisions are where the real understanding lives.
+
+
+
+<CodeBlock code={"# Example usage\nfrom sentence_transformers import SentenceTransformer\n\nmodel = SentenceTransformer('all-MiniLM-L6-v2')\nembeddings = model.encode(['Hello world', 'How are you?'])\nprint(embeddings.shape)  # (2, 384)"} lang="python" filename="example.py" />
+
+<Callout type="tip">Self-attention replaces recurrence by letting every token attend to every other token in parallel, which is why transformers are both faster and more expressive than RNNs.</Callout>
+
+<Callout type="warn">Before transformers, sequence models processed tokens one at a time, left to right.</Callout>
+
+<KeyTakeaways items=["Self-attention replaces recurrence by letting every token attend to every other token in parallel, which is why transformers are both faster and more expressive than RNNs.", "Multi-head attention is not just a capacity trick \u2014 different heads genuinely learn different types of linguistic relationships.", "Positional encoding is not optional; without it, the model cannot distinguish 'the dog bit the man' from 'the man bit the dog'.", "The feed-forward network stores most of the model's factual knowledge, acting as a key-value memory rather than a simple transformation.", "Residual connections and layer normalization are what make deep transformers trainable; without them, gradients vanish or explode.", "Building a transformer from scratch teaches you more about the architecture than reading any paper or tutorial."] />
+
+<Quiz question={"What is the primary advantage of self-attention over recurrent processing?"} options={["It uses fewer parameters", "It processes all tokens in parallel, allowing direct connections between any two positions", "It does not require GPU acceleration", "It automatically handles variable-length sequences without padding"]} answer={1} explanation={"Self-attention processes all tokens simultaneously, allowing any token to attend directly to any other token regardless of distance. This eliminates the sequential bottleneck of RNNs and enables parallel computation on modern hardware."} />
+
+<Faq items={[{"q": "Why are transformers better than RNNs for long sequences?", "a": "RNNs must pass information through a chain of hidden states, which causes information from early tokens to degrade by the time it reaches later positions. Transformers connect every token directly to every other token through attention, so information from position 1 is just as accessible at position 500 as at position 2."}, {"q": "How many parameters does a typical transformer have?", "a": "It varies enormously. The original transformer had 65 million parameters. GPT-2 had 1.5 billion. GPT-3 had 175 billion. Modern open-source models range from 7 billion (Llama 2 7B) to 70 billion (Llama 2 70B). The number of parameters is roughly proportional to the model's capacity to store knowledge and perform complex reasoning."}, {"q": "Can transformers handle sequences longer than they were trained on?", "a": "Standard transformers struggle with sequences longer than their training context window. However, recent techniques like RoPE (Rotary Position Embeddings) and ALiBi allow models to generalize to longer sequences. Some models also use sliding window attention or sparse attention patterns to handle very long inputs efficiently."}, {"q": "What is the difference between encoder-only, decoder-only, and encoder-decoder transformers?", "a": "Encoder-only models (like BERT) process the full input bidirectionally and are good for classification and understanding tasks. Decoder-only models (like GPT) generate text autoregressively, one token at a time. Encoder-decoder models (like T5) process input with the encoder and generate output with the decoder, which works well for translation and summarization."}]} />
+
+## Conclusion
+
+The broader lesson is that understanding transformers requires building one from scratch at least once. Reading the paper is not enough. Watching a tutorial is not enough. The act of implementing each component — attention, positional encoding, the feed-forward network, the training loop — forces you to confront the design decisions that the paper glosses over. Those design decisions are where the real understanding lives.
+
+
+
+[View the project on GitHub](https://github.com/3ni8ma/aarushkarakv2-website)

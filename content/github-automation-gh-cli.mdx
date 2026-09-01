@@ -1,0 +1,48 @@
+export const title = "GitHub Automation with the gh CLI: Triage, PRs, and Workflows"
+export const date = "September 01, 2026"
+export const tags = ["GitHub", "CLI", "Automation", "DevOps", "Workflows"]
+export const repo = "https://github.com/3ni8ma/3ni8ma"
+export const difficulty = "Intermediate"
+export const generated = "v2"
+
+import { Faq, KeyTakeaways } from "@/components/mdx"
+
+The gh CLI turns GitHub into a scriptable platform: issue triage, PR review automation, workflow control, and cross-repo coordination from shell scripts. This post covers real automation patterns for maintainers and heavy users.
+
+## gh as the Complete API Client
+
+`gh api` exposes the entire REST and GraphQL surface with auth built in. The pattern that unlocks everything: `gh api repos/{owner}/{repo}/issues` piped to jq, and `gh run watch` for workflow observability. The CLI is a thin wrapper over the API — everything the website can do, a script can do.
+
+## Automated Issue Triage
+
+The triage loop: fetch unlabeled issues, classify by keywords and titles, apply labels, assign priorities, and route to the right maintainer. A nightly script keeps a backlog organized without anyone touching the web UI. The discipline: classification must be conservative — an untriaged issue is better than a wrong label.
+
+## PR Review Automation
+
+The reviewer's checklist as code: check CI status, verify the diff touches only declared files, confirm the description matches the change, and comment when something fails the check. `gh pr view --json` + `gh pr diff` make the review scriptable; the script comments, a human decides.
+
+## Workflow Lifecycle Management
+
+Beyond triggering: `gh workflow disable` for flaky jobs, `gh run rerun` for transient failures, and `gh api` to approve protected-branch runs. The automation pattern: a cron that checks for failed runs older than a threshold and either reruns them once or files an issue — flaky CI stops being noise.
+
+## Cross-Repo Coordination
+
+One script, many repos: a loop over `gh repo list` runs the same triage or release check everywhere, and `gh issue create --repo` files findings in each. For the 3-4 repos one person actually maintains, cross-repo automation collapses hours of manual clicking into one scheduled pass.
+
+## Identity and Safety
+
+Automated actions run as a bot user or a PAT — the audit trail must show who did what. The safety patterns: `--dry-run` flags everywhere, confirmation prompts for destructive ops (deletes, force-pushes, label removal), and rate-limit awareness (`gh api rate_limit`).
+
+
+<Callout type="note">The bank-driven fallback wrote this post because the LLM proxy was unreachable — structure and facts come from the topic outline, and the next regeneration will enrich it.</Callout>
+
+
+<KeyTakeaways items={["gh as the Complete API Client", "Automated Issue Triage", "PR Review Automation", "Workflow Lifecycle Management", "Cross-Repo Coordination", "Identity and Safety"]} />
+
+
+<Faq items={[{"q": "What is the key idea in gh as the complete api client?", "a": "It is one of the core decisions that shape this topic. The section above walks through the reasoning, the tradeoffs, and the practical takeaway in context."}, {"q": "What is the key idea in automated issue triage?", "a": "It is one of the core decisions that shape this topic. The section above walks through the reasoning, the tradeoffs, and the practical takeaway in context."}, {"q": "What is the key idea in pr review automation?", "a": "It is one of the core decisions that shape this topic. The section above walks through the reasoning, the tradeoffs, and the practical takeaway in context."}]} />
+
+## Conclusion
+The gh CLI makes GitHub a scripting surface: triage, review checks, workflow hygiene, and cross-repo maintenance all become scheduled, testable, and reviewable. The discipline — conservative classification, dry runs, honest audit trails — is what keeps the automation trusted.
+
+[View the project on GitHub](https://github.com/3ni8ma/3ni8ma)

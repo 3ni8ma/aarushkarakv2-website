@@ -1,0 +1,48 @@
+export const title = "Crawling at Scale: Scheduling, Deduplication, and Storage"
+export const date = "September 03, 2026"
+export const tags = ["Web Crawling", "Scraping", "Pipelines", "Deduplication", "Storage"]
+export const repo = "https://github.com/3ni8ma/DoxDock"
+export const difficulty = "Advanced"
+export const generated = "v2"
+
+import { Faq, KeyTakeaways } from "@/components/mdx"
+
+A crawler that fetches one page is a script; one that fetches a thousand is a pipeline. This post covers frontier management, politeness policies, content deduplication, incremental re-crawls, and storage decisions for crawled data.
+
+## The Frontier: What to Fetch Next
+
+The crawl frontier is a priority queue of URLs, not a set. Rules that matter: scope filtering (stay on allowed hosts/paths), freshness (when to re-fetch a page), and prioritization (document pages over index pages). A frontier without priorities degenerates into hammering the same section.
+
+## Politeness as a Hard Requirement
+
+The politeness policy: delay between requests per host (configurable, generous defaults), retry with exponential backoff on 429/5xx, and `Last-Modified`/ETag conditional fetches. A crawler that respects politeness is tolerated; one that doesn't gets blocked — and burns the IP for everything else.
+
+## Content Deduplication
+
+Crawled pages are full of near-duplicates: pagination, boilerplate, template variants. The patterns: canonical URL detection, normalized-content hashing (strip whitespace and boilerplate before hashing), and similarity thresholds for near-dupes. Dedup before storage — every duplicate stored is noise in the dataset.
+
+## Incremental Re-Crawl
+
+Re-crawling everything every time is wasteful. The design: a crawl manifest keyed by URL with last-fetched time and content hash; re-crawl decisions based on freshness TTLs and change signals (headers, sitemap modtime). The dataset stays current at a fraction of the full-crawl cost.
+
+## Storage: Raw, Extracted, Derived
+
+The three-layer store: raw HTML in object storage (cheap, immutable), extracted content in a queryable database (documents, metadata, full text), and derived artifacts (indexes, embeddings) in purpose-built stores. The pipeline is idempotent at every layer — re-running a stage must never corrupt the layers below.
+
+## The System Architecture
+
+A crawler as a service: scheduler (cron or queue) → fetcher workers (bounded concurrency per host) → extractor → dedup → storage. Observability: per-host stats, error rates, and crawl coverage reports. A crawler you can't see into is a crawler you can't trust.
+
+
+<Callout type="note">The bank-driven fallback wrote this post because the LLM proxy was unreachable — structure and facts come from the topic outline, and the next regeneration will enrich it.</Callout>
+
+
+<KeyTakeaways items={["The Frontier: What to Fetch Next", "Politeness as a Hard Requirement", "Content Deduplication", "Incremental Re-Crawl", "Storage: Raw, Extracted, Derived", "The System Architecture"]} />
+
+
+<Faq items={[{"q": "What is the key idea in the frontier: what to fetch next?", "a": "It is one of the core decisions that shape this topic. The section above walks through the reasoning, the tradeoffs, and the practical takeaway in context."}, {"q": "What is the key idea in politeness as a hard requirement?", "a": "It is one of the core decisions that shape this topic. The section above walks through the reasoning, the tradeoffs, and the practical takeaway in context."}, {"q": "What is the key idea in content deduplication?", "a": "It is one of the core decisions that shape this topic. The section above walks through the reasoning, the tradeoffs, and the practical takeaway in context."}]} />
+
+## Conclusion
+Scaling a crawler is an exercise in discipline: priorities, politeness, deduplication, and storage separation. The pipeline that respects those four constraints scales to thousands of pages without drama — and produces a dataset you can actually trust.
+
+[View the project on GitHub](https://github.com/3ni8ma/DoxDock)

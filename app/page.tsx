@@ -133,8 +133,11 @@ export default function Home() {
         <div className="flex-shrink-0">
           <div className="relative w-56 md:w-72 rounded-2xl overflow-hidden border border-white/10 glass-card p-2">
             <img
-              src="/images/profile.jpg"
-              alt="Aarush Karak"
+              src="/images/aarush-karak-software-developer-toronto.jpg"
+              alt="Aarush Karak — Software Developer and Spatial Computing Engineer, Founder of TheCoderBros"
+              width={1023}
+              height={1537}
+              fetchPriority="high"
               className="w-full h-auto rounded-xl block"
             />
           </div>

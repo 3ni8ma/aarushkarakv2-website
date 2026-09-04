@@ -61,7 +61,7 @@ const personJsonLd = {
   "@id": `${siteConfig.url}/#person`,
   name: siteConfig.name,
   url: siteConfig.url,
-  image: `${siteConfig.url}/images/profile.jpg`,
+  image: `${siteConfig.url}/images/aarush-karak-software-developer-toronto.jpg`,
   jobTitle: "Software Developer",
   description: siteConfig.description,
   email: "mailto:worldshaans@gmail.com",

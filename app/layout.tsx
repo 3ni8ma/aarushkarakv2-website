@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 import { Space_Grotesk, JetBrains_Mono } from "next/font/google";
-import Script from "next/script";
 import { siteConfig } from "@/lib/site";
 import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
@@ -37,11 +36,20 @@ export const metadata: Metadata = {
     siteName: siteConfig.name,
     title: "Aarush Karak | Software Developer, AI & Spatial Computing",
     description: siteConfig.description,
+    images: [
+      {
+        url: "/opengraph-image.png",
+        width: 1200,
+        height: 630,
+        alt: "Aarush Karak — Software Developer, AI & Spatial Computing",
+      },
+    ],
   },
   twitter: {
     card: "summary_large_image",
     title: "Aarush Karak | Software Developer, AI & Spatial Computing",
     description: siteConfig.description,
+    images: ["/twitter-image.png"],
   },
   robots: {
     index: true,
@@ -110,8 +118,6 @@ export default function RootLayout({
       className={`${spaceGrotesk.variable} ${jetbrainsMono.variable} dark`}
     >
       <head>
-        <link rel="preconnect" href="https://cdn.aidesigner.ai" />
-        <link rel="dns-prefetch" href="https://cdn.aidesigner.ai" />
         <script
           type="application/ld+json"
           dangerouslySetInnerHTML={{ __html: JSON.stringify(personJsonLd) }}
@@ -124,13 +130,6 @@ export default function RootLayout({
           <main className="flex-1 pt-16">{children}</main>
           <Footer />
         </LoadingScreen>
-        <Script
-          src="https://cdn.aidesigner.ai/effects/runtime/v1.js"
-          strategy="lazyOnload"
-        />
-        <Script id="remove-aifx-badge" strategy="lazyOnload">
-          {`const _aifxClear=setInterval(()=>{const b=document.querySelector("[data-aifx-wm]");b&&(b.remove(),clearInterval(_aifxClear))},50);setTimeout(()=>clearInterval(_aifxClear),8e3);`}
-        </Script>
       </body>
     </html>
   );

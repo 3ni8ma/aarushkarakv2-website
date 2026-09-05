@@ -25,8 +25,12 @@ export default function Navbar() {
   }, []);
 
   useEffect(() => {
-    setMobileOpen(false);
-  }, [pathname]);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMobileOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [mobileOpen]);
 
   useEffect(() => {
     if (mobileOpen) {
@@ -78,7 +82,9 @@ export default function Navbar() {
           <button
             onClick={() => setMobileOpen(!mobileOpen)}
             className="md:hidden relative h-10 w-10 flex items-center justify-center text-white/80 hover:text-white z-50"
-            aria-label="Toggle menu"
+            aria-label={mobileOpen ? "Close menu" : "Open menu"}
+            aria-expanded={mobileOpen}
+            aria-controls="mobile-nav"
           >
             <div className="flex flex-col gap-1.5">
               <span
@@ -102,6 +108,7 @@ export default function Navbar() {
       </div>
 
       <div
+        id="mobile-nav"
         className={`fixed inset-0 z-40 transition-all duration-400 md:hidden ${
           mobileOpen
             ? "opacity-100 pointer-events-auto"
@@ -126,6 +133,7 @@ export default function Navbar() {
                 <Link
                   key={link.href}
                   href={link.href}
+                  onClick={() => setMobileOpen(false)}
                   className={`flex items-center gap-3 w-full px-5 py-4 text-base font-medium rounded-xl transition-all duration-200 ${
                     isActive
                       ? "text-cyan bg-white/8 border border-white/10"

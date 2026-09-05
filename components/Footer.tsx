@@ -52,7 +52,7 @@ export default function Footer() {
             >
               AARUSH KARAK
             </Link>
-            <p className="mt-3 text-sm text-white/40 max-w-xs leading-relaxed">
+            <p className="mt-3 text-sm text-white/60 max-w-xs leading-relaxed">
               Software developer, spatial computing & AI enthusiast, and founder
               building the future one project at a time.
             </p>
@@ -74,7 +74,7 @@ export default function Footer() {
                 <li key={link.href}>
                   <Link
                     href={link.href}
-                    className="text-sm text-white/40 hover:text-cyan transition-colors"
+                    className="text-sm text-white/60 hover:text-cyan transition-colors"
                   >
                     {link.label}
                   </Link>
@@ -101,14 +101,14 @@ export default function Footer() {
                 </a>
               ))}
             </div>
-            <p className="mt-4 text-xs text-white/30">
+            <p className="mt-4 text-xs text-white/50">
               Toronto, ON &middot; Canada
             </p>
           </div>
         </div>
 
         <div className="mt-10 pt-6 border-t border-white/5 text-center">
-          <p className="text-xs text-white/30">
+          <p className="text-xs text-white/50">
             &copy; {new Date().getFullYear()} Aarush Karak. All rights reserved.
           </p>
         </div>

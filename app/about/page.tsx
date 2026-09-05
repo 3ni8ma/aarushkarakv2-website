@@ -1,5 +1,6 @@
 import BackgroundEffect from "@/components/BackgroundEffect";
 import GlassCard from "@/components/GlassCard";
+import Image from "next/image";
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
@@ -29,11 +30,6 @@ const education = [
     school: "Russian School of Mathematics (RSM)",
     location: "Mathematics",
     period: "2024 - 2029",
-  },
-  {
-    school: "Garden High School",
-    location: "India",
-    period: "2014 - 2018",
   },
 ];
 
@@ -87,13 +83,12 @@ export default function About() {
         {/* Biography */}
         <GlassCard className="p-8 mb-12">
           <figure className="flex flex-col sm:flex-row items-center gap-6 mb-6">
-            <img
+            <Image
               src="/images/aarush-karak-software-developer-toronto.jpg"
               alt="Aarush Karak — Software Developer and Spatial Computing Engineer"
               width={192}
               height={288}
               loading="lazy"
-              decoding="async"
               className="w-36 rounded-2xl object-cover shrink-0 border border-white/10"
             />
             <figcaption className="text-white/80 leading-relaxed">

@@ -1,0 +1,48 @@
+export const title = "Design Tokens and Theme Systems with Tailwind"
+export const date = "September 05, 2026"
+export const tags = ["Design Tokens", "Tailwind", "CSS", "Theming", "Frontend"]
+export const repo = "https://github.com/3ni8ma/tailwind-plugin"
+export const difficulty = "Intermediate"
+export const generated = "v2"
+
+import { Faq, KeyTakeaways } from "@/components/mdx"
+
+A theme that survives a redesign is a token system, not a palette. This post covers the three-layer token architecture (primitive → semantic → component), CSS-variable theming with data attributes, dark mode, and extending Tailwind with a custom plugin.
+
+## Three Layers of Tokens
+
+Primitive tokens are the raw materials (a color ramp, a type scale); semantic tokens map to intent (background, surface, text-accent); component tokens bind semantics to components (button-bg, card-border). The rule that keeps themes sane: components reference semantic tokens only — never primitives directly.
+
+## CSS Variables as the Runtime
+
+Tokens as CSS custom properties on `:root`, overridden by scoped selectors. Theme switching via `data-theme` attributes: `html[data-theme='dark'] { --surface: ... }`. The tradeoff: CSS variables resolve at runtime (instant theming, no rebuild) at the cost of not being static values.
+
+## The Pitfalls of Variables in Gradients
+
+`var(--x)` inside `radial-gradient()` stops and some `background-image` url() contexts fails to resolve in several browsers. The workarounds: hardcoded values in gradient stops, or `html[data-mode]` selector overrides that swap entire gradient declarations instead of referencing variables.
+
+## Dark Mode Without Duplication
+
+The mode-agnostic design: semantic tokens stay the same; only surface-layer tokens flip with `data-mode`. Body backgrounds, text colors, and glass effects swap; accent palettes remain identical across modes. One component stylesheet, two modes, zero `dark:` prefixes.
+
+## Extending Tailwind with a Plugin
+
+A Tailwind plugin adds utilities and theme values from your tokens: `theme.extend.colors` from semantic tokens, custom utilities via `addUtilities`, and component classes via `addComponents`. The payoff: `bg-surface`, `text-accent`, `glass` — your design language becomes the utility vocabulary.
+
+## Shipping a Token Package
+
+Tokens as code: a TypeScript/JSON source of truth, build scripts generating the CSS variables and the Tailwind config, and versioning for consumers. A token change propagates to every consumer through the build — the theme is a dependency, not a find-and-replace.
+
+
+<Callout type="note">The bank-driven fallback wrote this post because the LLM proxy was unreachable — structure and facts come from the topic outline, and the next regeneration will enrich it.</Callout>
+
+
+<KeyTakeaways items={["Three Layers of Tokens", "CSS Variables as the Runtime", "The Pitfalls of Variables in Gradients", "Dark Mode Without Duplication", "Extending Tailwind with a Plugin", "Shipping a Token Package"]} />
+
+
+<Faq items={[{"q": "What is the key idea in three layers of tokens?", "a": "It is one of the core decisions that shape this topic. The section above walks through the reasoning, the tradeoffs, and the practical takeaway in context."}, {"q": "What is the key idea in css variables as the runtime?", "a": "It is one of the core decisions that shape this topic. The section above walks through the reasoning, the tradeoffs, and the practical takeaway in context."}, {"q": "What is the key idea in the pitfalls of variables in gradients?", "a": "It is one of the core decisions that shape this topic. The section above walks through the reasoning, the tradeoffs, and the practical takeaway in context."}]} />
+
+## Conclusion
+A theme system is architecture: primitive, semantic, and component layers that keep design intent stable while visuals evolve. With CSS variables as the runtime and Tailwind as the vocabulary, a redesign becomes a token update instead of a rewrite.
+
+[View the project on GitHub](https://github.com/3ni8ma/tailwind-plugin)

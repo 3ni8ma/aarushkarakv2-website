@@ -6,8 +6,6 @@ interface GlassCardProps {
   as?: "div" | "section" | "article" | "a";
   href?: string;
   onClick?: () => void;
-  ariaLabel?: string;
-  id?: string;
 }
 
 export default function GlassCard({
@@ -16,8 +14,6 @@ export default function GlassCard({
   as: Tag = "div",
   href,
   onClick,
-  ariaLabel,
-  id,
 }: GlassCardProps) {
   const baseClass = `glass-card ${className}`;
 
@@ -26,10 +22,8 @@ export default function GlassCard({
     return (
       <a
         href={href}
-        id={id}
         className={baseClass}
         onClick={onClick}
-        aria-label={ariaLabel}
         {...(isExternal ? { target: "_blank", rel: "noopener noreferrer" } : {})}
       >
         {children}
@@ -38,7 +32,7 @@ export default function GlassCard({
   }
 
   return (
-    <Tag id={id} className={baseClass} onClick={onClick} aria-label={ariaLabel}>
+    <Tag className={baseClass} onClick={onClick}>
       {children}
     </Tag>
   );

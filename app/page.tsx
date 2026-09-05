@@ -1,8 +1,6 @@
-import Image from "next/image";
 import BackgroundEffect from "@/components/BackgroundEffect";
 import GlassCard from "@/components/GlassCard";
 import GlowButton from "@/components/GlowButton";
-import HeroVisual from "@/components/HeroVisual";
 import type { Metadata } from "next";
 import { siteConfig } from "@/lib/site";
 
@@ -15,14 +13,6 @@ export const metadata: Metadata = {
     url: siteConfig.url,
     title: "Aarush Karak | Software Developer, AI & Spatial Computing",
     description: siteConfig.description,
-    images: [
-      {
-        url: "/opengraph-image.png",
-        width: 1200,
-        height: 630,
-        alt: "Aarush Karak — Software Developer, AI & Spatial Computing",
-      },
-    ],
   },
 };
 
@@ -34,7 +24,6 @@ const projects = [
       "Browser-based AI operating system with touch-free hand-gesture navigation and a 3D spatial interface. Built with Three.js & MediaPipe.",
     tags: ["Three.js", "MediaPipe", "AI", "Spatial Computing"],
     href: "https://github.com/3ni8ma/HELIOS",
-    caseStudy: "/blog/building-helios-gesture-controlled-ai-os-in-the-browser",
   },
   {
     title: "astro-tasks",
@@ -43,7 +32,6 @@ const projects = [
       "Python CLI developer dashboard on PyPI integrating GitHub CLI, git health checks, and stats. Built for the Stardance Challenge (NASA x GitHub x AMD).",
     tags: ["Python", "CLI", "PyPI", "Open Source"],
     href: "https://github.com/3ni8ma/astro-tasks",
-    caseStudy: "/blog/building-astro-tasks",
   },
   {
     title: "Finance Hub",
@@ -52,7 +40,6 @@ const projects = [
       "Full-stack financial intelligence platform with live market monitoring, AI-driven predictions using Prophet, and real-time dashboards.",
     tags: ["React", "FastAPI", "Supabase", "ML"],
     href: "https://github.com/3ni8ma/Finance-Hub",
-    caseStudy: "/blog/aura-finance-zero-cost-stack",
   },
   {
     title: "Knowledge-Globe",
@@ -61,7 +48,6 @@ const projects = [
       "Interactive 3D encyclopedia visualizing knowledge networks on a rotatable 3D globe with dynamic data connections.",
     tags: ["Three.js", "WebGL", "Data Viz"],
     href: "https://github.com/3ni8ma/Knowledge-Globe",
-    caseStudy: "/blog/spatial-computing-web",
   },
   {
     title: "FixMate",
@@ -78,38 +64,31 @@ const projects = [
       "Open-source civic data platform centralizing public records and legislative datasets with cloud-native backend systems.",
     tags: ["Node.js", "PostgreSQL", "Civic Tech"],
     href: "https://github.com/3ni8ma/DoxDock",
-    caseStudy: "/blog/civic-tech-doxdock",
   },
 ];
 
 const stats = [
-  { value: "1000+", label: "Coding Hours Tracked" },
-  { value: "9+", label: "Projects Shipped" },
+  { value: "200+", label: "Coding Hours Tracked" },
+  { value: "9+", label: "Projects" },
   { value: "$5K+", label: "Freelance Revenue" },
   { value: "200+", label: "Volunteer Hours" },
 ];
 
 export default function Home() {
   return (
-    <div className="relative isolate min-h-screen" style={{ overflow: "visible" }}>
+    <div className="relative isolate min-h-screen overflow-hidden">
       <BackgroundEffect effect="mesh-gradient" />
 
       {/* Hero Section */}
       <section className="relative z-10 min-h-[calc(100vh-4rem)] px-4 py-20 flex flex-col md:flex-row items-center md:items-center justify-center gap-10 md:gap-16 max-w-5xl mx-auto">
         <div className="flex-1 text-left">
-          <p className="mb-3 inline-flex items-center gap-2 rounded-full border border-cyan/30 bg-cyan/5 px-4 py-1.5 text-xs font-semibold text-cyan">
-            <span className="h-1.5 w-1.5 rounded-full bg-cyan animate-pulse" aria-hidden="true" />
-            Open to internships & freelance
-          </p>
-          <h1 className="text-4xl sm:text-5xl font-bold leading-tight tracking-tight">
-            Aarush Karak
-            <span className="mt-2 block bg-gradient-to-r from-cyan to-[#e60049] bg-clip-text text-2xl text-transparent sm:text-3xl">
-              Software Developer, AI & Spatial Computing
-            </span>
+          <h1>
+            <img
+              src="/images/logo-text.png"
+              alt="Aarush Karak"
+              className="h-12 sm:h-16 md:h-20 w-auto"
+            />
           </h1>
-          <div className="mt-6 w-full max-w-lg h-56 sm:h-64 md:h-72" style={{ overflow: "visible" }}>
-            <HeroVisual />
-          </div>
           <GlassCard className="mt-6 px-8 py-5 max-w-2xl">
             <p className="text-lg sm:text-xl text-white/80 leading-relaxed font-medium">
               Sophomore @ John Fraser Secondary School | Founder @ TheCoderBros |
@@ -117,28 +96,28 @@ export default function Home() {
             </p>
           </GlassCard>
 
-          <ul className="mt-8 grid grid-cols-2 gap-3 w-full max-w-lg list-none">
+          <div className="mt-8 grid grid-cols-2 gap-3 w-full max-w-lg">
             {[
               "Founder @ TheCoderBros",
               "Open-Source Maintainer",
               "1st Place TSA State Champion (Video Game 3D Design)",
               "NYLF Engineering Invited Scholar",
             ].map((badge) => (
-              <li
+              <div
                 key={badge}
                 className="glass-card px-4 py-3 text-sm text-white/90 text-left font-semibold"
               >
                 {badge}
-              </li>
+              </div>
             ))}
-          </ul>
+          </div>
 
           <div className="mt-8 flex flex-wrap gap-4">
             <GlowButton
-              href="#projects"
+              href="/blog"
               className="px-8 py-3 text-sm font-bold text-white hover:text-cyan transition-all"
             >
-              View Projects
+              Explore Projects
             </GlowButton>
             <GlowButton
               href="/resume.pdf"
@@ -148,23 +127,17 @@ export default function Home() {
             >
               View Resume
             </GlowButton>
-            <GlowButton
-              href="/blog/building-helios-gesture-controlled-ai-os-in-the-browser"
-              className="px-8 py-3 text-sm font-bold text-white hover:text-cyan transition-all"
-            >
-              Read Case Studies
-            </GlowButton>
           </div>
         </div>
 
         <div className="flex-shrink-0">
           <div className="relative w-56 md:w-72 rounded-2xl overflow-hidden border border-white/10 glass-card p-2">
-            <Image
+            <img
               src="/images/aarush-karak-software-developer-toronto.jpg"
               alt="Aarush Karak — Software Developer and Spatial Computing Engineer, Founder of TheCoderBros"
               width={1023}
               height={1537}
-              priority
+              fetchPriority="high"
               className="w-full h-auto rounded-xl block"
             />
           </div>
@@ -172,23 +145,19 @@ export default function Home() {
       </section>
 
       {/* Stats Bar */}
-      <section aria-label="Highlights" className="relative z-10 mx-auto max-w-4xl px-4 pb-16">
-        <ul className="grid grid-cols-2 md:grid-cols-4 gap-4 list-none">
+      <section className="relative z-10 mx-auto max-w-4xl px-4 pb-16">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           {stats.map((stat) => (
-            <li key={stat.label}>
-              <GlassCard className="text-center py-6 px-4">
-                <div className="text-3xl font-bold text-cyan" aria-hidden="true">{stat.value}</div>
-                <div className="mt-1 text-sm text-white/70 font-medium">
-                  <span className="sr-only">{stat.value} — </span>{stat.label}
-                </div>
-              </GlassCard>
-            </li>
+            <GlassCard key={stat.label} className="text-center py-6 px-4">
+              <div className="text-3xl font-bold text-cyan">{stat.value}</div>
+              <div className="mt-1 text-sm text-white/70 font-medium">{stat.label}</div>
+            </GlassCard>
           ))}
-        </ul>
+        </div>
       </section>
 
       {/* Featured Projects */}
-      <section id="projects" aria-label="Featured projects" className="relative z-10 mx-auto max-w-6xl px-4 pb-24 scroll-mt-20">
+      <section className="relative z-10 mx-auto max-w-6xl px-4 pb-24">
         <GlassCard className="p-6 mb-12 text-center">
           <h2 className="text-3xl font-bold">
             Featured <span className="text-gradient-cyan">Projects</span>
@@ -196,26 +165,11 @@ export default function Home() {
         </GlassCard>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
           {projects.map((project) => (
-            <GlassCard
-              key={project.title}
-              as="article"
-              className="p-6 flex flex-col group"
-            >
-              <a
-                href={project.href}
-                target="_blank"
-                rel="noopener noreferrer"
-                aria-label={`${project.title} on GitHub (opens in new tab)`}
-                className="block rounded-xl focus-visible:outline-2 focus-visible:outline-cyan"
-              >
+            <GlassCard key={project.title} as="a" href={project.href} className="p-6 flex flex-col group">
               <div className="relative overflow-hidden rounded-xl border border-white/10 mb-4">
-                <Image
+                <img
                   src={project.image}
                   alt={`${project.title} preview`}
-                  width={800}
-                  height={450}
-                  loading="lazy"
-                  sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
                   className="w-full aspect-video object-cover block transition-transform duration-500 group-hover:scale-105"
                 />
               </div>
@@ -223,24 +177,15 @@ export default function Home() {
                 <h3 className="text-xl font-bold text-white group-hover:text-cyan transition-colors">
                   {project.title}
                 </h3>
-                <svg className="h-4 w-4 text-white/30 group-hover:text-cyan transition-colors flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <svg className="h-4 w-4 text-white/30 group-hover:text-cyan transition-colors flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6" />
                   <polyline points="15 3 21 3 21 9" />
                   <line x1="10" y1="14" x2="21" y2="3" />
                 </svg>
               </div>
-              </a>
               <p className="mt-3 text-sm text-white/70 leading-relaxed flex-1">
                 {project.description}
               </p>
-              {"caseStudy" in project && project.caseStudy && (
-                <a
-                  href={project.caseStudy}
-                  className="mt-3 inline-flex w-fit text-sm font-semibold text-cyan hover:text-white transition-colors"
-                >
-                  Read case study →
-                </a>
-              )}
               <div className="mt-4 flex flex-wrap gap-2">
                 {project.tags.map((tag) => (
                   <span

@@ -8,32 +8,88 @@ interface BackgroundEffectProps {
     | "mesh-gradient";
 }
 
-const gradients: Record<string, string> = {
-  "fluid-smoke":
-    "radial-gradient(60% 50% at 20% 20%, rgba(0,242,254,0.14), transparent 60%), radial-gradient(50% 45% at 80% 75%, rgba(230,0,73,0.12), transparent 60%), #0d1117",
-  "fluted-glass":
-    "radial-gradient(50% 60% at 50% 0%, rgba(0,242,254,0.10), transparent 60%), #0d1117",
-  "liquid-metal":
-    "radial-gradient(70% 60% at 70% 30%, rgba(230,0,73,0.14), transparent 60%), radial-gradient(60% 50% at 30% 70%, rgba(0,242,254,0.12), transparent 60%), #0d1117",
-  "noise-shimmer":
-    "radial-gradient(50% 50% at 30% 30%, rgba(214,121,100,0.10), transparent 60%), radial-gradient(50% 50% at 70% 70%, rgba(0,242,254,0.10), transparent 60%), #0d1117",
-  "aurora-flow":
-    "linear-gradient(180deg, rgba(0,242,254,0.08), transparent 40%), radial-gradient(60% 50% at 80% 20%, rgba(230,0,73,0.10), transparent 60%), #0d1117",
-  "mesh-gradient":
-    "radial-gradient(55% 45% at 15% 15%, rgba(230,0,73,0.16), transparent 60%), radial-gradient(55% 50% at 85% 80%, rgba(0,242,254,0.14), transparent 60%), radial-gradient(40% 40% at 70% 20%, rgba(214,121,100,0.08), transparent 60%), #0d1117",
+const presets: Record<
+  string,
+  Record<string, string>
+> = {
+  "fluid-smoke": {
+    "data-aifx": "fluid-smoke",
+    "data-aifx-colors": "#00f2fe,#e60049,#00f2fe,#00f2fe",
+    "data-aifx-bg": "#0d1117",
+    "data-aifx-bg-alpha": "0.47",
+    "data-aifx-speed": "0.64",
+    "data-aifx-scale": "1.87",
+    "data-aifx-warp": "1.53",
+    "data-aifx-rise": "0.57",
+    "data-aifx-swirl": "0.55",
+    "data-aifx-contrast": "1",
+    "data-aifx-softness": "0.78",
+  },
+  "fluted-glass": {
+    "data-aifx": "fluted-glass",
+    "data-aifx-colors": "#e60049,#00f2fe,#0d1117,#0d1117",
+    "data-aifx-bg": "#0d1117",
+    "data-aifx-speed": "0.79",
+    "data-aifx-flutes": "39",
+    "data-aifx-shape": "pattern",
+    "data-aifx-profile": "contour",
+    "data-aifx-distortion": "0.8",
+    "data-aifx-highlight": "2",
+    "data-aifx-blur": "2.5",
+    "data-aifx-angle": "251",
+    "data-aifx-grain": "0",
+    "data-aifx-mouse": "1",
+  },
+  "liquid-metal": {
+    "data-aifx": "liquid-metal",
+    "data-aifx-colors": "#e60049,#e60049,#00f2fe,#00f2fe",
+    "data-aifx-bg": "#0d1117",
+    "data-aifx-speed": "1.78",
+    "data-aifx-scale": "1.58",
+    "data-aifx-contrast": "2.2",
+    "data-aifx-flow-angle": "33",
+    "data-aifx-relief": "2.05",
+    "data-aifx-mouse": "0.5",
+  },
+  "noise-shimmer": {
+    "data-aifx": "noise-shimmer",
+    "data-aifx-colors": "#00f2fe,#e60049,#d67964",
+    "data-aifx-bg": "#0d1117",
+    "data-aifx-scale": "0.7",
+    "data-aifx-shimmer": "1",
+    "data-aifx-intensity": "0.69",
+    "data-aifx-contrast": "2.5",
+    "data-aifx-speed": "2",
+  },
+  "aurora-flow": {
+    "data-aifx": "aurora-flow",
+    "data-aifx-colors": "#00f2fe,#e60049,#d67964",
+    "data-aifx-bg": "#0d1117",
+  },
+  "mesh-gradient": {
+    "data-aifx": "mesh-gradient",
+    "data-aifx-colors": "#e60049,#e60049,#00f2fe,#0d1117",
+    "data-aifx-bg": "#0d1117",
+    "data-aifx-speed": "1.04",
+    "data-aifx-scale": "2.09",
+    "data-aifx-warp": "1.5",
+    "data-aifx-softness": "1",
+    "data-aifx-contrast": "1.16",
+    "data-aifx-grain": "0.2",
+    "data-aifx-mouse": "1",
+  },
 };
 
-/**
- * Zero-dependency ambient background. Previously this emitted `data-aifx`
- * attributes consumed by an external CDN script; it now renders a pure-CSS
- * gradient so the site has no third-party runtime dependency.
- */
 export default function BackgroundEffect({ effect }: BackgroundEffectProps) {
+  const attrs = presets[effect];
+
+  if (!attrs) return null;
+
   return (
     <div
-      className="pointer-events-none fixed inset-0 -z-10"
+      {...attrs}
+      className="fixed inset-0 -z-10 pointer-events-none will-change-transform"
       aria-hidden="true"
-      style={{ background: gradients[effect] ?? gradients["mesh-gradient"] }}
     />
   );
 }

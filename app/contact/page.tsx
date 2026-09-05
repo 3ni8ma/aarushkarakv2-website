@@ -1,6 +1,6 @@
 import BackgroundEffect from "@/components/BackgroundEffect";
-import ContactForm from "@/components/ContactForm";
 import GlassCard from "@/components/GlassCard";
+import GlowButton from "@/components/GlowButton";
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
@@ -13,11 +13,22 @@ const contactInfo = [
   {
     label: "Email",
     value: "worldshaans@gmail.com",
+    secondary: "1135807@pdsb.net",
     href: "mailto:worldshaans@gmail.com",
     icon: (
       <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <rect x="2" y="4" width="20" height="16" rx="2" />
         <path d="M22 4L12 13 2 4" />
+      </svg>
+    ),
+  },
+  {
+    label: "Phone",
+    value: "+1 (647) 519-4798",
+    href: "tel:+16475194798",
+    icon: (
+      <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72 12.84 12.84 0 00.7 2.81 2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45 12.84 12.84 0 002.81.7A2 2 0 0122 16.92z" />
       </svg>
     ),
   },
@@ -53,18 +64,19 @@ const contactInfo = [
   },
 ];
 
-const testimonials = [
+const references = [
   {
-    quote:
-      "Aarush was one of the youngest interns we've selected — he picked up technical concepts fast and taught them clearly to visitors.",
-    name: "Sci-Tech Discovery Center",
-    role: "Maker Studio Teen Internship",
+    name: "Jacie Hood",
+    role: "Director of Education",
+    org: "Sci-Tech Discovery Center",
+    phone: "469-896-2188",
+    email: "jacie.hood@scitechdiscovery.org",
   },
   {
-    quote:
-      "As parliamentarian he kept a 200+ student chapter running smoothly all year — then went and won 1st place at state.",
-    name: "Technology Student Association",
-    role: "Chapter Officer, 9th Grade Center",
+    name: "Abby Resendez",
+    role: "Media & Computer Science Teacher",
+    org: "Coppell ISD",
+    email: "aresendez@coppellisd.com",
   },
 ];
 
@@ -90,7 +102,71 @@ export default function Contact() {
             <h2 className="text-xl font-bold text-white mb-6">
               Send a Message
             </h2>
-            <ContactForm />
+            <form
+              action="mailto:worldshaans@gmail.com"
+              method="post"
+              encType="text/plain"
+              className="space-y-5"
+            >
+              <div>
+                <label htmlFor="name" className="block text-sm font-medium text-white/70 mb-2">
+                  Name
+                </label>
+                <input
+                  type="text"
+                  id="name"
+                  name="name"
+                  required
+                  className="glass-input w-full px-4 py-3 text-white placeholder-white/50"
+                  placeholder="Your name"
+                />
+              </div>
+              <div>
+                <label htmlFor="email" className="block text-sm font-medium text-white/70 mb-2">
+                  Email
+                </label>
+                <input
+                  type="email"
+                  id="email"
+                  name="email"
+                  required
+                  className="glass-input w-full px-4 py-3 text-white placeholder-white/50"
+                  placeholder="your@email.com"
+                />
+              </div>
+              <div>
+                <label htmlFor="subject" className="block text-sm font-medium text-white/70 mb-2">
+                  Subject
+                </label>
+                <input
+                  type="text"
+                  id="subject"
+                  name="subject"
+                  required
+                  className="glass-input w-full px-4 py-3 text-white placeholder-white/50"
+                  placeholder="What is this about?"
+                />
+              </div>
+              <div>
+                <label htmlFor="message" className="block text-sm font-medium text-white/70 mb-2">
+                  Message
+                </label>
+                <textarea
+                  id="message"
+                  name="message"
+                  required
+                  rows={5}
+                  className="glass-input w-full px-4 py-3 text-white placeholder-white/50 resize-none"
+                  placeholder="Your message..."
+                />
+              </div>
+              <GlowButton
+                type="submit"
+                className="w-full px-8 py-3 text-sm font-bold text-white hover:text-cyan transition-all cursor-pointer"
+              >
+                Send Message
+              </GlowButton>
+            </form>
           </GlassCard>
 
           {/* Contact Info */}
@@ -107,7 +183,7 @@ export default function Contact() {
                     </span>
                     <div>
                       <p className="text-sm font-medium text-white/60">{item.label}</p>
-                      {"href" in item && item.href ? (
+                      {item.href ? (
                         <a
                           href={item.href}
                           target="_blank"
@@ -119,35 +195,51 @@ export default function Contact() {
                       ) : (
                         <p className="text-sm text-white/90 font-medium">{item.value}</p>
                       )}
+                      {item.secondary && (
+                        <a
+                          href={`mailto:${item.secondary}`}
+                          className="text-sm text-white/70 hover:text-cyan transition-colors block"
+                        >
+                          {item.secondary}
+                        </a>
+                      )}
                     </div>
                   </div>
                 ))}
               </div>
             </GlassCard>
 
-            {/* Testimonials */}
+            {/* References */}
             <GlassCard className="p-8">
               <h2 className="text-xl font-bold text-white mb-6">
-                What People Say
+                Professional References
               </h2>
               <div className="space-y-5">
-                {testimonials.map((t) => (
-                  <figure key={t.name}>
-                    <blockquote className="text-sm text-white/80 leading-relaxed italic">
-                      “{t.quote}”
-                    </blockquote>
-                    <figcaption className="mt-2 text-sm font-semibold text-cyan">
-                      {t.name}
-                      <span className="block text-xs font-medium text-white/50 not-italic">
-                        {t.role}
-                      </span>
-                    </figcaption>
-                  </figure>
+                {references.map((ref) => (
+                  <div key={ref.name}>
+                    <h3 className="text-base font-bold text-white">
+                      {ref.name}
+                    </h3>
+                    <p className="text-sm text-white/70 font-medium">
+                      {ref.role}, {ref.org}
+                    </p>
+                    {ref.phone && (
+                      <a
+                        href={`tel:${ref.phone.replace(/\D/g, "")}`}
+                        className="text-sm text-cyan/80 hover:text-cyan transition-colors block font-medium"
+                      >
+                        {ref.phone}
+                      </a>
+                    )}
+                    <a
+                      href={`mailto:${ref.email}`}
+                      className="text-sm text-cyan/80 hover:text-cyan transition-colors block font-medium"
+                    >
+                      {ref.email}
+                    </a>
+                  </div>
                 ))}
               </div>
-              <p className="mt-6 text-xs text-white/40">
-                Professional references available on request.
-              </p>
             </GlassCard>
           </div>
         </div>

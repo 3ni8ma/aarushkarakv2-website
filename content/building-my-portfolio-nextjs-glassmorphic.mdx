@@ -1,0 +1,83 @@
+export const title = "Building My Portfolio: Glassmorphism, MDX, and SEO on Next.js"
+export const date = "September 05, 2026"
+export const tags = ["Next.js", "Portfolio", "SEO", "MDX", "Tailwind CSS"]
+export const repo = "https://github.com/3ni8ma/aarushkarakv2-website"
+export const difficulty = "Intermediate"
+export const generated = "v2"
+
+import { Callout, CodeBlock, Faq, KeyTakeaways } from "@/components/mdx"
+
+My first portfolio was a Vite + React site. It looked fine and loaded fast, but Google could barely see it. No metadata, no sitemap, no structured data — so I rebuilt it on Next.js.
+
+A portfolio nobody finds is just a diary with better CSS. This post is the full story of that rebuild: the decisions, the numbers, and the mistakes I would not repeat.
+
+## Why Rebuild Instead of Redecorate
+
+The old site (a Vite + React SPA) had three problems no amount of CSS could fix:
+
+- **Client-side rendering.** Crawlers saw a loading spinner, not content. Every page was effectively invisible to search.
+- **No blog engine.** Writing a post meant hand-editing JSX. I published rarely because publishing hurt.
+- **No link previews.** Sharing a project on LinkedIn or Discord produced a gray box with no title, image, or description.
+
+Next.js App Router solved all three: server-rendered HTML by default, a real metadata API, and `sitemap.ts` / `robots.ts` as code. The redesign was the excuse; discoverability was the reason.
+
+<Callout type="tip" title="The rule I now follow">
+  If a page matters, view-source should show its content — not a root div and a bundle URL. Check any page of this site and you will see real HTML.
+</Callout>
+
+## The Design System: Glass, Neon, and Restraint
+
+I wanted the site to feel like my work: dark editor background, neon accents, depth without clutter. The system is three tokens and one component:
+
+- **Background** `#0d1117` — GitHub-dark inspired, easy on the eyes for long reads.
+- **Accents** cyan `#00f2fe` and crimson `#e60049` — used for gradients, never for body text.
+- **Typography** Space Grotesk for headings, JetBrains Mono for labels and code.
+
+Everything sits on a single `.glass-card` utility: layered radial gradients, a translucent border, backdrop blur, and a hover lift. One class, reused across hero, projects, blog cards, and forms — which is why the whole site feels coherent despite having six page types.
+
+<CodeBlock code={".glass-card {\n  border-radius: 24px;\n  border: 1px solid transparent;\n  background:\n    radial-gradient(130% 100% at 8% 0%, rgba(0, 242, 254, 0.12), transparent 42%),\n    linear-gradient(155deg, rgba(13, 17, 23, 0.62), rgba(13, 17, 23, 0.5))\n      padding-box,\n    linear-gradient(155deg, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0.08))\n      border-box;\n  backdrop-filter: blur(8px) saturate(120%);\n}"} lang="css" filename="globals.css" />
+
+The hard lesson was contrast. My first pass used `text-white/30` for footer text — elegant, and completely unreadable. It failed WCAG's 4.5:1 ratio badly. The fix was unglamorous: bump secondary text to `white/60` minimum everywhere. Aesthetic taste means nothing if people can't read the words.
+
+## The Blog Engine: Files, Not a CMS
+
+The requirement was simple: writing a post should mean dropping one file into a folder. No database, no admin panel, no monthly bill. So `content/` holds `.mdx` files, and `lib/content.ts` (about 75 lines) does everything else — it reads each file, extracts the `export const` metadata with regex, computes word count and reading time, builds the excerpt, and sorts newest-first.
+
+<CodeBlock code={"export const title = \"Building My Portfolio\"\nexport const date = \"September 05, 2026\"\nexport const tags = [\"Next.js\", \"Portfolio\", \"SEO\"]\nexport const difficulty = \"Intermediate\""} lang="tsx" filename="content/my-post.mdx" />
+
+Each slug becomes a static page via `generateStaticParams`, with its own metadata, Open Graph tags, and `BlogPosting` JSON-LD. The result: 30+ posts, zero CMS, build time measured in seconds. The excerpt bug I lived with for weeks — descriptions cut mid-word like "extendi" — came from a `slice(0, 220)` with no word-boundary check. Small function, visible on every card. Details compound.
+
+## SEO: The Unsexy Work That Actually Matters
+
+Design gets the compliments; SEO gets the visitors. The full checklist I implemented:
+
+| Item | Implementation |
+|---|---|
+| Titles + descriptions | Next.js metadata API per page |
+| Canonical URLs | `alternates.canonical` on every route |
+| Sitemap + robots | `sitemap.ts` and `robots.ts` as code, never hand-edited |
+| Structured data | `Person` schema globally, `BlogPosting` per post |
+| Link previews | OG + Twitter images, tested in validators |
+| Semantic HTML | One `h1` per page, real landmarks, descriptive alt text |
+
+The single highest-leverage item was the `Person` JSON-LD block: name, role, location, and `sameAs` links to GitHub, LinkedIn, Kaggle, and dev.to. It tells Google exactly who the site is about, in a format machines can't misread.
+
+<Callout type="warn" title="Validate, don't assume">
+  Every SEO feature was checked in Google's Rich Results Test and a link-preview debugger before I called it done. Metadata you never render is just comments with extra steps.
+</Callout>
+
+## The 3D Hero: Ambition With a Fallback
+
+The hero uses React Three Fiber — a mouse-reactive 3D model floating above the fold. It is the most fragile thing on the site (WebGL, external model file, hundreds of kilobytes of Three.js), so it follows one rule: **the page must be perfect without it**.
+
+The model component loads client-side only, capped at 1.5x pixel ratio, disabled entirely for `prefers-reduced-motion` users — who get a clean static gradient instead. When the model file went missing during one deploy, visitors saw a designed fallback instead of a black hole. Nobody reported it; I found it in the logs. That is what a fallback is for.
+
+## What I'd Do Differently
+
+Honestly: I would have cut the third-party background-effects script on day one instead of month two. It was a CDN runtime the entire visual design depended on — when it was slow, the whole site waited behind a spinner, and crawlers saw "Loading" instead of content. Replacing it with pure CSS gradients changed nothing visually and removed an entire category of failure. Dependencies are liability with a marketing page.
+
+Second: images. I shipped raw `<img>` tags for months before switching to `next/image`. Automatic resizing, lazy loading, and blur placeholders are free performance — skipping them cost real load time on the project grid, the heaviest page on the site.
+
+<KeyTakeaways items={["Server-rendered HTML is the foundation of a discoverable portfolio — crawlers should see content, not spinners.", "A three-token design system (one background, two accents) beats a palette you can't stay consistent with.", "File-based MDX plus ~75 lines of metadata code replaces an entire CMS at zero cost.", "JSON-LD structured data is the highest-leverage SEO work per line of code.", "Every fragile enhancement (3D, effects, animations) needs a designed fallback and reduced-motion support."]} />
+
+<Faq items={[{ q: "What stack is this portfolio built on?", a: "Next.js 16 App Router with React 19, Tailwind CSS v4, MDX for the blog, Three.js for the hero, and Vercel for hosting — all on free tiers." }, { q: "How long did the rebuild take?", a: "The initial rebuild took a few focused weekends; the SEO overhaul, blog engine, and polish were iterative improvements over the following weeks." }, { q: "Can I use this approach for my own portfolio?", a: "Yes — the pattern is: server-rendered framework, file-based content, metadata + sitemap + JSON-LD, one design system, and zero paid services until traffic justifies them." }]} />

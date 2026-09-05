@@ -86,22 +86,6 @@ export default function About() {
 
         {/* Biography */}
         <GlassCard className="p-8 mb-12">
-          <figure className="flex flex-col sm:flex-row items-center gap-6 mb-6">
-            <img
-              src="/images/aarush-karak-software-developer-toronto.jpg"
-              alt="Aarush Karak — Software Developer and Spatial Computing Engineer"
-              width={192}
-              height={288}
-              loading="lazy"
-              decoding="async"
-              className="w-36 rounded-2xl object-cover shrink-0 border border-white/10"
-            />
-            <figcaption className="text-white/80 leading-relaxed">
-              <strong className="text-white">Aarush Karak</strong> — software
-              developer building AI systems and 3D spatial interfaces. Founder
-              of TheCoderBros, based in Toronto, Canada.
-            </figcaption>
-          </figure>
           <p className="text-white/85 leading-relaxed text-lg">
             Grade 10 student passionate about computer science, software
             development, AI systems, and spatial computing. Builds end-to-end

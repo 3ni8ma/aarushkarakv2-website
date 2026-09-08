@@ -1,0 +1,48 @@
+export const title = "Algorithmic Trading Signals: From Indicators to Backtests"
+export const date = "September 08, 2026"
+export const tags = ["Trading", "Quant", "Backtesting", "Indicators", "Python"]
+export const repo = "https://github.com/3ni8ma/AutoHedge"
+export const difficulty = "Advanced"
+export const generated = "v2"
+
+import { Faq, KeyTakeaways } from "@/components/mdx"
+
+RSI, MACD, and moving averages are the vocabulary of signal engines — but turning indicators into a tradable edge is a statistics problem. This post covers signal construction, backtesting without overfitting, walk-forward validation, and the honest limits of retail quant trading.
+
+## The Signal Vocabulary
+
+The core indicators: RSI (14-period, 70/30 thresholds) for momentum exhaustion, MACD (12/26/9) for trend shifts, and moving-average crossovers for regime changes. Each is a lagging function of price — the signal fires after the move starts. Combining uncorrelated signals is the start of an edge; stacking correlated ones is just noise.
+
+## Signal Construction, Not Indicator Collection
+
+A strategy is a decision rule: entry conditions, exit conditions, position sizing. The discipline: define signals as boolean predicates over indicator state, and define exits as first-class (stop-loss, take-profit, time-based) rather than as afterthoughts. A strategy without explicit exits is a strategy without risk control.
+
+## Backtesting Without Lying to Yourself
+
+The backtest mechanics that matter: no lookahead (indicators must use only data available at decision time), realistic slippage and fees, and bar-close execution instead of magic fills. The classic failure: a backtest that assumes you bought at the intraday low — every strategy wins on paper with hindsight fills.
+
+## Overfitting and the Parameter Lottery
+
+Grid-searching 200 parameter combinations on one ticker and reporting the best produces a strategy optimized for history, not markets. The guardrails: walk-forward validation (rolling train/test windows), out-of-sample holdouts, and parameter stability — a strategy whose edge vanishes when RSI(12) becomes RSI(14) has no edge.
+
+## From Backtest to Paper Trading
+
+The gap between backtest and live is regime change. Paper trading the strategy against live data for weeks reveals execution reality: fills, latency, data gaps. The promotion criteria: paper performance within a tolerance of backtest expectations, and behavior in a down-market window.
+
+## The Honest Limits
+
+Retail quant trading is a statistics exercise against professionals with better data and execution. The realistic goals: disciplined exits, systematic entries, and risk management that caps losses — an edge that compounds slowly beats a lottery ticket. Treat the strategy as a system to operate, not a prediction to trust.
+
+
+<Callout type="note">The bank-driven fallback wrote this post because the LLM proxy was unreachable — structure and facts come from the topic outline, and the next regeneration will enrich it.</Callout>
+
+
+<KeyTakeaways items={["The Signal Vocabulary", "Signal Construction, Not Indicator Collection", "Backtesting Without Lying to Yourself", "Overfitting and the Parameter Lottery", "From Backtest to Paper Trading", "The Honest Limits"]} />
+
+
+<Faq items={[{"q": "What is the key idea in the signal vocabulary?", "a": "It is one of the core decisions that shape this topic. The section above walks through the reasoning, the tradeoffs, and the practical takeaway in context."}, {"q": "What is the key idea in signal construction, not indicator collection?", "a": "It is one of the core decisions that shape this topic. The section above walks through the reasoning, the tradeoffs, and the practical takeaway in context."}, {"q": "What is the key idea in backtesting without lying to yourself?", "a": "It is one of the core decisions that shape this topic. The section above walks through the reasoning, the tradeoffs, and the practical takeaway in context."}]} />
+
+## Conclusion
+A trading signal is only as good as the discipline around it: explicit exits, honest backtests, walk-forward validation, and paper trading before capital. The system — not the indicator — is the product, and its edge must survive the test of time out of sample.
+
+[View the project on GitHub](https://github.com/3ni8ma/AutoHedge)

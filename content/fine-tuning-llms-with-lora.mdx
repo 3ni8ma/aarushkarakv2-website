@@ -1,0 +1,84 @@
+export const title = "Fine-Tuning LLMs with LoRA: A Practical Guide"
+export const date = "September 14, 2026"
+export const tags = ["AI", "LoRA", "Fine-Tuning", "LLMs", "Machine Learning", "Python"]
+export const repo = "https://github.com/3ni8ma/aarushkarakv2-website"
+export const difficulty = "Advanced"
+export const generated = "v2"
+
+import { Callout, CodeBlock, Faq, KeyTakeaways, Quiz } from "@/components/mdx"
+
+I spent $47 on GPU compute before I learned that fine-tuning a 7B parameter model does not require updating 7 billion parameters. The model I was training converged beautifully on the validation set. It just cost ten times what it should have, took three times longer, and used four times the memory. The fix was not a better optimizer or a faster GPU. The fix was LoRA — Low-Rank Adaptation — and it changed how I think about model training entirely.
+
+## Why Full Fine-Tuning Is Usually Overkill
+
+When you fine-tune a language model, you are updating its weights to perform better on a specific task. Full fine-tuning updates every parameter in the model. For a 7B model with float16 weights, that is 14GB of parameters just for the model, plus gradients, optimizer states, and activations during training.
+
+The insight behind parameter-efficient fine-tuning (PEFT) is that most of the model's knowledge does not need to change for a new task. The base model already knows language, reasoning, and world knowledge. What needs to change is how the model applies that knowledge to a specific task. LoRA formalizes this intuition: instead of updating all weights, you freeze the original model and train small adapter matrices that modify the model's behavior.
+
+## How LoRA Works: Low-Rank Decomposition
+
+LoRA decomposes the weight update into two low-rank matrices. Instead of updating a weight matrix W of shape (d, d), LoRA trains two matrices A of shape (d, r) and B of shape (r, d), where r is the rank — typically 4, 8, or 16. The update is W + A @ B, but only A and B are trained.
+
+The math is straightforward: a rank-8 decomposition of a 4096x4096 weight matrix uses 8,192 parameters instead of 16,777,216 — a reduction of over 2000x. The key assumption is that the weight update needed for a specific task has low intrinsic rank: most of the important changes can be captured in a small number of dimensions.
+
+This assumption holds empirically across many tasks. The reason is that fine-tuning is not teaching the model new knowledge — it is adjusting how existing knowledge is applied. That adjustment is inherently low-rank because it is a small perturbation to a model that already works.
+
+## Implementing LoRA with PEFT
+
+The Hugging Face PEFT library makes LoRA straightforward. The core workflow is: load a base model, define which layers to adapt, configure LoRA parameters, and train.
+
+The critical choices are: which layers to apply LoRA to (attention projections are most common, but FFN layers also benefit), the rank (higher is more expressive but uses more memory), and the alpha scaling factor (controls the magnitude of the LoRA update relative to the base weights).
+
+A common configuration is rank 16, alpha 32, applied to all attention projection layers (q_proj, k_proj, v_proj, o_proj). This typically uses 1-3% of the memory of full fine-tuning while achieving 90-95% of the performance on most tasks.
+
+## Data Preparation: The Part That Actually Matters
+
+The quality of your training data determines the quality of your fine-tuned model more than any hyperparameter. I have seen models trained on 500 carefully curated examples outperform models trained on 10,000 noisy ones.
+
+The format matters. For instruction-tuning, the standard format is a system prompt, a user message, and an assistant response. Consistency in formatting prevents the model from learning conflicting patterns. If some examples use '### Instruction:' and others use 'User:', the model wastes capacity learning to handle both formats instead of learning the task.
+
+Data diversity matters more than data volume. If every example in your training set asks the model to classify sentiment, the model will learn sentiment classification but forget everything else. Include examples that test different capabilities: reasoning, formatting, edge cases, and multi-step tasks.
+
+## Training Loop: What to Watch For
+
+LoRA training has failure modes that differ from full fine-tuning. The most common is catastrophic forgetting: the model learns the new task but loses capabilities it had before. This happens when the learning rate is too high or the training set is too narrow.
+
+The learning rate for LoRA is typically higher than for full fine-tuning — 1e-4 to 5e-4 is common — because the adapter matrices are randomly initialized and need larger updates to converge. But higher learning rates increase the risk of forgetting. The balance is delicate.
+
+Monitoring validation loss is necessary but not sufficient. A model can have low validation loss and still produce worse outputs than the base model on general tasks. I evaluate fine-tuned models on both the target task and a set of general benchmarks to catch regression.
+
+## Merging and Deploying LoRA Adapters
+
+The trained LoRA adapter is small — typically 10-100MB for a 7B model. It can be stored separately from the base model and loaded on demand. This enables serving multiple fine-tuned variants from a single base model, switching adapters based on the request.
+
+Merging the adapter into the base model produces a standalone model with no LoRA overhead. The merge is a single matrix operation: W_merged = W_base + A @ B. After merging, the model runs at the same speed as the original — there is no inference overhead from LoRA.
+
+The tradeoff is flexibility versus simplicity. Keeping adapters separate lets you switch tasks dynamically but requires managing multiple files. Merging produces a simpler deployment but locks the model to one task.
+
+## Lessons I Learned the Hard Way
+
+My first LoRA experiment failed because I applied adapters to every linear layer in the model. The adapter count was in the hundreds, and the training was slower than full fine-tuning — the opposite of the point. The lesson was that LoRA's efficiency comes from selective application, not blanket coverage.
+
+The second lesson was about evaluation. I measured success by validation loss and declared the experiment a success. Then I deployed the model and discovered it had forgotten how to format code. The validation set did not include code tasks, so the regression was invisible. Now I always evaluate on a broad benchmark suite before deploying.
+
+
+
+<CodeBlock code={"# Example implementation\nimport torch\nfrom transformers import AutoModel, AutoTokenizer\n\nmodel = AutoModel.from_pretrained('base-model')\n# Load LoRA adapters\nmodel.load_adapter('adapter-path')\n"} lang="python" filename="load_model.py" />
+
+<Callout type="tip">LoRA works because fine-tuning updates have low intrinsic rank — most task-specific changes can be captured in a small number of dimensions.</Callout>
+
+<Callout type="warn">When you fine-tune a language model, you are updating its weights to perform better on a specific task.</Callout>
+
+<KeyTakeaways items=["LoRA works because fine-tuning updates have low intrinsic rank \u2014 most task-specific changes can be captured in a small number of dimensions.", "Rank 16 applied to attention projections typically achieves 90-95% of full fine-tuning performance at 1-3% of the memory cost.", "Data quality matters more than data volume: 500 curated examples often beat 10,000 noisy ones.", "Use a higher learning rate than full fine-tuning (1e-4 to 5e-4), but monitor for catastrophic forgetting on general tasks.", "Always evaluate fine-tuned models on both the target task and general benchmarks to catch capability regression.", "LoRA adapters can be kept separate for flexible deployment or merged for simpler serving with zero inference overhead."] />
+
+<Quiz question={"Why does LoRA decompose weight updates into low-rank matrices?"} options={["To make the model smaller for deployment", "Because task-specific weight updates have low intrinsic dimensionality", "To avoid using GPU acceleration during training", "Because full weight matrices cannot be stored in memory"]} answer={1} explanation={"LoRA exploits the observation that fine-tuning updates are low-rank: most task-specific changes can be captured in a small number of dimensions. This allows training two small matrices instead of one large weight update, reducing memory by orders of magnitude."} />
+
+<Faq items={[{"q": "Can I stack multiple LoRA adapters for different tasks?", "a": "Yes, this is one of LoRA's key advantages. You can train separate adapters for different tasks and load them on demand. Some approaches also combine adapters through interpolation or routing, though this is still an active research area."}, {"q": "How does LoRA compare to QLoRA?", "a": "QLoRA combines LoRA with 4-bit quantization of the base model. This reduces memory further \u2014 a 7B model can be fine-tuned on a single 24GB GPU. The tradeoff is slightly lower quality due to quantization, but in practice the difference is small for most tasks."}, {"q": "What rank should I use for LoRA?", "a": "Rank 16 is a good default. Lower ranks (4-8) work for simple tasks with limited data. Higher ranks (32-64) help for complex tasks or when you have abundant training data. The rank should be small enough to be efficient but large enough to capture the task-specific changes."}, {"q": "Does LoRA work for all model architectures?", "a": "LoRA works for any model with linear layers, which includes essentially all transformer-based language models. It has been successfully applied to GPT, Llama, Mistral, Phi, and many other architectures. The technique is architecture-agnostic because it modifies the weight matrices, not the model structure."}]} />
+
+## Conclusion
+
+The second lesson was about evaluation. I measured success by validation loss and declared the experiment a success. Then I deployed the model and discovered it had forgotten how to format code. The validation set did not include code tasks, so the regression was invisible. Now I always evaluate on a broad benchmark suite before deploying.
+
+
+
+[View the project on GitHub](https://github.com/3ni8ma/aarushkarakv2-website)
